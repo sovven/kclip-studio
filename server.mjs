@@ -15,18 +15,19 @@ mkdirSync(JOBS, { recursive: true });
 
 // ---------- 板块 → 搜索词 / 频道 ----------
 // 板块按小红书受众设计（韩语学习 / 韩娱粉 / K-pop 追星 / 综艺爱好者）。
-// ch：官方频道的 Shorts 页（最新在前，带播放量）→ 每个频道取最新 12 条，再按播放量排 = "最近火的"
-// q：没有合适官方频道的题材，用 YouTube 搜索补充
+// 频道由 scripts/scout-channels.mjs 按"最新 12 条 Shorts 播放量中位数"筛出来（2026-10 数据），过一段时间重跑一次更新。
+// ch：官方频道 Shorts 页（最新在前）→ 每个频道取最新 12 条，再按播放量排 = 最近火的；q：搜索补充
 export const CATEGORIES = {
-  idol: { label: "爱豆日常·综艺", ch: ["https://www.youtube.com/@StrayKids/shorts", "https://www.youtube.com/@pledis17/shorts", "https://www.youtube.com/@BTS/shorts", "https://www.youtube.com/@NewJeans_official/shorts", "https://www.youtube.com/@aespa/shorts", "https://www.youtube.com/@IVEstarship/shorts", "https://www.youtube.com/@BLACKPINK/shorts", "https://www.youtube.com/@TWICE/shorts", "https://www.youtube.com/@LESSERAFIM_official/shorts", "https://www.youtube.com/@ILLIT_official/shorts", "https://www.youtube.com/@BABYMONSTER/shorts", "https://www.youtube.com/@RIIZE_official/shorts"] },
-  kpop: { label: "K-POP 舞台·直拍", ch: ["https://www.youtube.com/@StudioCHOOM/shorts", "https://www.youtube.com/@KBSKpop/shorts", "https://www.youtube.com/@MBCkpop/shorts", "https://www.youtube.com/@1theK/shorts", "https://www.youtube.com/@Mnet/shorts", "https://www.youtube.com/@dingomusic/shorts", "https://www.youtube.com/@HYBELABELS/shorts"] },
-  variety: { label: "韩综名场面", ch: ["https://www.youtube.com/@SBSRunningMan/shorts", "https://www.youtube.com/@mbicnews/shorts", "https://www.youtube.com/@WassupMan/shorts", "https://www.youtube.com/@MBCentertainment/shorts", "https://www.youtube.com/@JTBCVoyage/shorts", "https://www.youtube.com/@kbsent/shorts", "https://www.youtube.com/@tvNDENT/shorts", "https://www.youtube.com/@sbsnow/shorts"] },
-  drama: { label: "热播韩剧", ch: ["https://www.youtube.com/@netflixkcontent/shorts", "https://www.youtube.com/@NetflixKorea/shorts", "https://www.youtube.com/@jtbcdrama/shorts", "https://www.youtube.com/@tvNDRAMA_official/shorts"] },
-  relate: { label: "恋爱·职场共鸣", ch: ["https://www.youtube.com/@shortbox/shorts", "https://www.youtube.com/@nerdult/shorts"], q: ["연애 공감 shorts", "직장인 공감 shorts"] },
-  china: { label: "韩国人×中国", q: ["중국어 하는 아이돌", "아이돌 중국어", "한국인 중국 음식 먹방", "마라탕 먹방 아이돌", "중국 여행 한국인 반응"] },
+  idol: { label: "爱豆日常·综艺", ch: ["https://www.youtube.com/@BLACKPINK/shorts", "https://www.youtube.com/@BABYMONSTER/shorts", "https://www.youtube.com/@NewJeans_official/shorts", "https://www.youtube.com/@StrayKids/shorts", "https://www.youtube.com/@ILLIT_official/shorts", "https://www.youtube.com/@cortis_bighit/shorts", "https://www.youtube.com/@TXT_bighit/shorts", "https://www.youtube.com/@BTS/shorts", "https://www.youtube.com/@RESCENE_official/shorts", "https://www.youtube.com/@aespa/shorts", "https://www.youtube.com/@TWICE/shorts", "https://www.youtube.com/@ATEEZofficial/shorts", "https://www.youtube.com/@IVEstarship/shorts", "https://www.youtube.com/@LESSERAFIM_official/shorts", "https://www.youtube.com/@NCTDREAM/shorts", "https://www.youtube.com/@pledis17/shorts"] },
+  kpop: { label: "K-POP 舞台·挑战", ch: ["https://www.youtube.com/@SMTOWN/shorts", "https://www.youtube.com/@theblacklabel/shorts", "https://www.youtube.com/@BOYNEXTDOOR_official/shorts", "https://www.youtube.com/@TWS_PLEDIS/shorts", "https://www.youtube.com/@NCTsmtown/shorts", "https://www.youtube.com/@ITZY/shorts", "https://www.youtube.com/@PLAVE_official/shorts", "https://www.youtube.com/@jypentertainment/shorts", "https://www.youtube.com/@KBSKpop/shorts"] },
+  variety: { label: "韩综名场面", ch: ["https://www.youtube.com/@ddeunddeun/shorts", "https://www.youtube.com/@SBSRunningMan/shorts", "https://www.youtube.com/@JTBCVoyage/shorts", "https://www.youtube.com/@workman/shorts", "https://www.youtube.com/@WassupMan/shorts", "https://www.youtube.com/@mmtg_official/shorts", "https://www.youtube.com/@SBSCatch/shorts", "https://www.youtube.com/@mbicnews/shorts"] },
+  drama: { label: "热播韩剧", ch: ["https://www.youtube.com/@SBSCatch/shorts", "https://www.youtube.com/@netflixkcontent/shorts", "https://www.youtube.com/@NetflixKorea/shorts", "https://www.youtube.com/@jtbcdrama/shorts"] },
+  relate: { label: "恋爱·职场共鸣", ch: ["https://www.youtube.com/@shortbox/shorts", "https://www.youtube.com/@nerdult/shorts", "https://www.youtube.com/@workman/shorts"] },
+  china: { label: "韩国人×中国", ch: ["https://www.youtube.com/@WayV/shorts", "https://www.youtube.com/@NCT127/shorts", "https://www.youtube.com/@NCTsmtown/shorts"], q: ["아이돌 중국어 shorts", "중국어 하는 아이돌", "한국인 중국 음식 먹방 shorts"] },
   speech: { label: "感动·获奖感言", q: ["수상소감 shorts", "백상예술대상 수상소감", "청룡영화상 수상소감"] },
-  wys: { label: "外研社同款来源", ch: ["https://www.youtube.com/@WassupMan/shorts", "https://www.youtube.com/@mbicnews/shorts", "https://www.youtube.com/@shortbox/shorts", "https://www.youtube.com/@nerdult/shorts", "https://www.youtube.com/@SBSRunningMan/shorts"] },
+  wys: { label: "外研社同款来源", ch: ["https://www.youtube.com/@ddeunddeun/shorts", "https://www.youtube.com/@SBSRunningMan/shorts", "https://www.youtube.com/@WassupMan/shorts", "https://www.youtube.com/@shortbox/shorts", "https://www.youtube.com/@nerdult/shorts", "https://www.youtube.com/@mbicnews/shorts"] },
 };
+
 
 const run = (cmd, args, opts = {}) =>
   new Promise((res, rej) =>
@@ -99,6 +100,19 @@ async function getHealth() {
   return health;
 }
 
+// 本周热门爱豆/话题：已抓取候选里的 #标签，按播放量加权（去掉 #shorts 这类通用标签）
+const GENERIC = /^#(shorts?|kpop|k-pop|광고|ad|fyp|viral|youtube|dance|challenge|챌린지)$/i;
+function trending(limit = 20) {
+  const heat = new Map();
+  for (const [k, { items }] of cache) {
+    if (k.startsWith("q:")) continue;
+    for (const v of items) for (const t of new Set((v.title || "").match(/#[^\s#]+/g) || [])) if (!GENERIC.test(t)) heat.set(t, (heat.get(t) || 0) + v.views);
+  }
+  // 同一个人中英韩多种写法只留播放量最高的那个写法（按热度值去重）
+  const seen = new Set();
+  return [...heat].sort((a, b) => b[1] - a[1]).filter(([, v]) => !seen.has(v) && seen.add(v)).slice(0, limit).map(([tag, views]) => ({ tag, views }));
+}
+
 // ---------- Claude Code 无头调用 ----------
 const claude = (prompt, { cwd = ROOT, json = true, onLine } = {}) =>
   new Promise((res, rej) => {
@@ -134,7 +148,8 @@ async function recommend(cats) {
 硬性排除：体育（比赛、运动员、奥运等）、政治/时政、负面社会新闻、灾难事故、低俗擦边。
 
 只输出 JSON 数组，不要其他文字；字符串里不要用英文双引号，引用请用「」。每项：{"id":原id,"zh_title":"中文小标题(≤14字，小红书风格)","summary":"一句话讲视频内容","why":"小红书用户为什么会喜欢（点出人群和情绪）","tags":["2-3个标签"],"cover_style":"band|poster|card|reels 之一","score":1-10}
-`+`候选：${JSON.stringify(list)}`;
+`+`本周热门话题（按播放量）：${trending(15).map((t) => t.tag).join(" ")}
+候选：${JSON.stringify(list)}`;
   const ask = async (p) => {
     const o = JSON.parse(await claude(p));
     if (o.is_error) throw new Error(o.result?.includes("login") ? "Claude CLI 未登录：在终端运行 claude 然后输入 /login" : o.result || "Claude 调用失败");
@@ -260,6 +275,7 @@ http
       if (u.pathname === "/api/search") return send(res, 200, await search(u.searchParams.get("q") || ""));
       if (u.pathname === "/api/picks") { try { return send(res, 200, JSON.parse(readFileSync(path.join(JOBS, "picks.json"), "utf8"))); } catch { return send(res, 200, { picks: [] }); } }
       if (u.pathname === "/api/retry" && req.method === "POST") { const { id } = await body(req); const j = jobs.find((x) => x.id === id); if (j && j.status === "failed") { Object.assign(j, { status: "queued", error: undefined, steps: 0, stage: -1, last: "排队中" }); saveJobs(); pump(); } return send(res, 200, { ok: true }); }
+      if (u.pathname === "/api/trending") return send(res, 200, trending());
       if (u.pathname === "/api/discover") return send(res, 200, await discover(u.searchParams.get("cat")));
       if (u.pathname === "/api/recommend") return send(res, 200, await recommend((u.searchParams.get("cats") || "idol,variety,kpop,relate").split(",")));
       if (u.pathname === "/api/jobs" && req.method === "GET") return send(res, 200, jobs.map((j) => ({ ...j, outputs: outputsOf(j) })));

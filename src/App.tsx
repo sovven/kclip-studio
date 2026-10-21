@@ -201,7 +201,7 @@ function GalleryCard({ v }: { v: Video }) {
 }
 
 function Discover() {
-  const { categories, selected, toggleCat, videos, loading, picks, picking, recommend, query, search, searching, results, loggedIn } = useStudio();
+  const { categories, selected, toggleCat, videos, loading, picks, picking, recommend, query, search, searching, results, loggedIn, trending } = useStudio();
   const [q, setQ] = useState(query);
   const [dur, setDur] = useState<"all" | "60">("60");
   const [sort, setSort] = useState<"hot" | "mix">("hot");
@@ -235,7 +235,7 @@ function Discover() {
         <Button type="submit" className="absolute right-1.5 top-1/2 h-9 -translate-y-1/2 rounded-full px-4">搜索</Button>
       </form>
 
-      <div className="mb-10 flex flex-wrap items-center gap-2">
+      <div className="mb-4 flex flex-wrap items-center gap-2">
         {categories.map((c) => {
           const on = selected.includes(c.id);
           return (
@@ -254,6 +254,26 @@ function Discover() {
           );
         })}
       </div>
+
+      {trending.length > 0 && (
+        <div className="mb-10 flex items-center gap-3 overflow-hidden">
+          <span className="shrink-0 text-xs font-semibold text-muted-foreground">本周热门</span>
+          <div className="flex gap-1.5 overflow-x-auto pb-1 [scrollbar-width:none]">
+            {trending.slice(0, 16).map((t, i) => (
+              <button
+                key={t.tag}
+                onClick={() => { const q = t.tag.slice(1); setQ(q); search(q); }}
+                className="flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-xs text-foreground/80 transition-colors hover:bg-secondary"
+              >
+                <span className={cn("tabular-nums", i < 3 ? "font-semibold text-primary" : "text-muted-foreground")}>{i + 1}</span>
+                {t.tag.slice(1)}
+                <span className="text-muted-foreground">{fmtViews(t.views)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {!trending.length && <div className="mb-10" />}
 
       <section className="mb-12">
         <SectionHead

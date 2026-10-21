@@ -49,6 +49,8 @@ const savedTheme = (() => { try { return (localStorage.getItem("kclip-theme") as
 applyTheme(savedTheme);
 
 type State = {
+  trending: { tag: string; views: number }[];
+  loadTrending: () => Promise<void>;
   page: Page;
   setPage: (p: Page) => void;
   theme: Theme;
@@ -83,6 +85,8 @@ type State = {
 };
 
 export const useStudio = create<State>((set, get) => ({
+  trending: [],
+  loadTrending: async () => { try { set({ trending: await api("/api/trending") }); } catch { /* 忽略 */ } },
   page: "discover",
   setPage: (page) => set({ page }),
   theme: savedTheme,
@@ -140,6 +144,7 @@ export const useStudio = create<State>((set, get) => ({
         }
       }),
     );
+    get().loadTrending();
   },
 
   recommend: async () => {
