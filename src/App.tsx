@@ -181,20 +181,19 @@ function PickCard({ v }: { v: Video }) {
 function GalleryCard({ v }: { v: Video }) {
   const { openDetail, jobs } = useStudio();
   const job = jobs.find((j) => j.vid === v.id);
+  const title = v.ai?.zh_title || v.title.replace(/#[^\s#]+/g, "").trim() || v.title;
   return (
     <motion.button layout initial={{ opacity: 0 }} animate={{ opacity: 1 }} onClick={() => openDetail(v)} className="group text-left">
-      <div className="relative aspect-video overflow-hidden rounded-2xl bg-muted shadow-card">
+      <div className="relative aspect-[9/16] overflow-hidden rounded-2xl bg-muted shadow-card">
         <img src={v.thumb} alt="" loading="lazy" className="size-full object-cover transition-transform duration-500 group-hover:scale-[1.03]" />
-        {v.duration != null && <span className="absolute bottom-2 right-2 rounded-md bg-black/60 px-1.5 text-[11px] font-medium text-white backdrop-blur">{fmtDur(v.duration)}</span>}
-        {job && <span className="absolute left-2 top-2 rounded-full bg-card/90 px-2 py-0.5 text-[11px] font-medium backdrop-blur">{job.status === "done" ? "已制作" : "制作中"}</span>}
-        <div className="absolute inset-0 grid place-items-center bg-black/0 opacity-0 transition-all group-hover:bg-black/15 group-hover:opacity-100">
-          <span className="grid size-11 place-items-center rounded-full bg-white/90 text-black shadow-lg"><Play className="size-4 fill-current" /></span>
+        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/30 to-transparent px-3 pb-3 pt-12">
+          <div className="line-clamp-2 text-[13px] font-semibold leading-snug text-white">{title}</div>
+          <div className="mt-1.5 flex items-center gap-1 text-[11px] text-white/75">
+            <Eye className="size-3" />{fmtViews(v.views)}
+            <span className="ml-auto max-w-[60%] truncate">{v.channel}</span>
+          </div>
         </div>
-      </div>
-      <div className="mt-2.5 line-clamp-2 text-sm font-medium leading-snug">{v.title}</div>
-      <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-        <span className="truncate">{v.channel}</span>
-        {!!v.views && <span className="ml-auto flex shrink-0 items-center gap-1"><Eye className="size-3" />{fmtViews(v.views)}</span>}
+        {job && <span className="absolute left-2 top-2 rounded-full bg-white/90 px-2 py-0.5 text-[11px] font-medium text-black">{job.status === "done" ? "已制作" : "制作中"}</span>}
       </div>
     </motion.button>
   );
@@ -311,9 +310,9 @@ function Discover() {
           }
         />
         {isLoading && !pool.length ? (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-x-5 gap-y-7">{Array.from({ length: 8 }, (_, i) => <Skeleton key={i} className="aspect-video rounded-2xl" />)}</div>
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-3">{Array.from({ length: 8 }, (_, i) => <Skeleton key={i} className="aspect-[9/16] rounded-2xl" />)}</div>
         ) : pool.length ? (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-x-5 gap-y-7">{pool.map((v) => <GalleryCard key={v.id} v={v} />)}</div>
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(168px,1fr))] gap-3">{pool.map((v) => <GalleryCard key={v.id} v={v} />)}</div>
         ) : (
           <Empty icon={<Compass />} title="选一个板块开始" text="点上面的胶囊标签，或者直接搜索关键词。" />
         )}

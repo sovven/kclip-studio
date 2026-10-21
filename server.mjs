@@ -46,7 +46,8 @@ const ytList = async (src, n) => {
     channel: e.channel || e.uploader || pl.channel || pl.uploader || "",
     views: e.view_count || 0,
     duration: e.duration || null,
-    thumb: `https://i.ytimg.com/vi/${e.id}/hqdefault.jpg`,
+    // Shorts 用竖版封面：优先取 yt-dlp 给的竖图（高 > 宽），没有就用 oardefault（Shorts 竖版预览）
+    thumb: (e.thumbnails || []).filter((t) => t.height > t.width).sort((a, b) => b.height - a.height)[0]?.url || `https://i.ytimg.com/vi/${e.id}/oardefault.jpg`,
     platform: "youtube",
   }));
 };
