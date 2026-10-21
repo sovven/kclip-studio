@@ -14,16 +14,18 @@ const NODE_MODULES = "D:/Agent/Claude/workpalce/work/vedio/sejong-video/node_mod
 mkdirSync(JOBS, { recursive: true });
 
 // ---------- 板块 → 搜索词 / 频道 ----------
+// 板块按小红书受众设计（韩语学习 / 韩娱粉 / K-pop 追星 / 综艺爱好者）。
+// ch：官方频道的 Shorts 页（最新在前，带播放量）→ 每个频道取最新 12 条，再按播放量排 = "最近火的"
+// q：没有合适官方频道的题材，用 YouTube 搜索补充
 export const CATEGORIES = {
-  wys: { label: "外研社同款来源", ch: ["https://www.youtube.com/@WassupMan/shorts", "https://www.youtube.com/@mbicnews/shorts"], q: ["엠빅뉴스 #shorts", "숏박스 #shorts", "너덜트 #shorts", "지구오락실 #shorts", "유퀴즈 #shorts", "백상예술대상 수상소감", "피식대학 #shorts", "길거리 인터뷰 #shorts"] },
-  funny: { label: "综艺搞笑", q: ["예능 웃긴 장면 #shorts", "라디오스타 #shorts", "런닝맨 레전드 #shorts"], ch: ["https://www.youtube.com/@mbicnews/shorts", "https://www.youtube.com/@WassupMan/shorts"] },
-  meme: { label: "梗", q: ["요즘 유행하는 밈 #shorts", "유행어 #shorts", "킹받는 #shorts"] },
-  kpop: { label: "K-POP", q: ["kpop 무대 #shorts", "아이돌 직캠 #shorts", "아이돌 예능 #shorts"] },
-  dance: { label: "舞蹈", q: ["댄스 챌린지 #shorts", "kpop dance challenge #shorts"] },
-  speech: { label: "感动 · 获奖感言", q: ["수상소감 #shorts", "감동 명언 #shorts", "백상예술대상 수상소감"] },
-  news: { label: "新闻", q: ["뉴스 화제 #shorts", "엠빅뉴스 #shorts"] },
-  trend: { label: "流行", q: ["요즘 한국 유행 #shorts", "한국 트렌드 #shorts"] },
-  drama: { label: "韩剧名场面", q: ["드라마 명장면 #shorts", "드라마 명대사 #shorts"] },
+  idol: { label: "爱豆日常·综艺", ch: ["https://www.youtube.com/@StrayKids/shorts", "https://www.youtube.com/@pledis17/shorts", "https://www.youtube.com/@BTS/shorts", "https://www.youtube.com/@NewJeans_official/shorts", "https://www.youtube.com/@aespa/shorts", "https://www.youtube.com/@IVEstarship/shorts", "https://www.youtube.com/@BLACKPINK/shorts", "https://www.youtube.com/@TWICE/shorts", "https://www.youtube.com/@LESSERAFIM_official/shorts", "https://www.youtube.com/@ILLIT_official/shorts", "https://www.youtube.com/@BABYMONSTER/shorts", "https://www.youtube.com/@RIIZE_official/shorts"] },
+  kpop: { label: "K-POP 舞台·直拍", ch: ["https://www.youtube.com/@StudioCHOOM/shorts", "https://www.youtube.com/@KBSKpop/shorts", "https://www.youtube.com/@MBCkpop/shorts", "https://www.youtube.com/@1theK/shorts", "https://www.youtube.com/@Mnet/shorts", "https://www.youtube.com/@dingomusic/shorts", "https://www.youtube.com/@HYBELABELS/shorts"] },
+  variety: { label: "韩综名场面", ch: ["https://www.youtube.com/@SBSRunningMan/shorts", "https://www.youtube.com/@mbicnews/shorts", "https://www.youtube.com/@WassupMan/shorts", "https://www.youtube.com/@MBCentertainment/shorts", "https://www.youtube.com/@JTBCVoyage/shorts", "https://www.youtube.com/@kbsent/shorts", "https://www.youtube.com/@tvNDENT/shorts", "https://www.youtube.com/@sbsnow/shorts"] },
+  drama: { label: "热播韩剧", ch: ["https://www.youtube.com/@netflixkcontent/shorts", "https://www.youtube.com/@NetflixKorea/shorts", "https://www.youtube.com/@jtbcdrama/shorts", "https://www.youtube.com/@tvNDRAMA_official/shorts"] },
+  relate: { label: "恋爱·职场共鸣", ch: ["https://www.youtube.com/@shortbox/shorts", "https://www.youtube.com/@nerdult/shorts"], q: ["연애 공감 shorts", "직장인 공감 shorts"] },
+  china: { label: "韩国人×中国", q: ["중국어 하는 아이돌", "아이돌 중국어", "한국인 중국 음식 먹방", "마라탕 먹방 아이돌", "중국 여행 한국인 반응"] },
+  speech: { label: "感动·获奖感言", q: ["수상소감 shorts", "백상예술대상 수상소감", "청룡영화상 수상소감"] },
+  wys: { label: "外研社同款来源", ch: ["https://www.youtube.com/@WassupMan/shorts", "https://www.youtube.com/@mbicnews/shorts", "https://www.youtube.com/@shortbox/shorts", "https://www.youtube.com/@nerdult/shorts", "https://www.youtube.com/@SBSRunningMan/shorts"] },
 };
 
 const run = (cmd, args, opts = {}) =>
@@ -33,12 +35,14 @@ const run = (cmd, args, opts = {}) =>
 
 const ytList = async (src, n) => {
   const url = src.startsWith("http") ? src : `ytsearch${n}:${src}`;
-  const out = await run(YTDLP, ["--flat-playlist", "-J", "--playlist-items", `1-${n}`, "--extractor-args", "youtube:lang=ko", url]);
-  return (JSON.parse(out).entries || []).map((e) => ({
+  // 注意不要加 youtube:lang=ko：韩文界面的"조회수 1.7만회"yt-dlp 解析不了，播放量会变成 0
+  const out = await run(YTDLP, ["--flat-playlist", "-J", "--playlist-items", `1-${n}`, url]);
+  const pl = JSON.parse(out);
+  return (pl.entries || []).map((e) => ({
     id: e.id,
     url: e.url?.startsWith("http") ? e.url : `https://www.youtube.com/watch?v=${e.id}`,
     title: e.title,
-    channel: e.channel || e.uploader || "",
+    channel: e.channel || e.uploader || pl.channel || pl.uploader || "",
     views: e.view_count || 0,
     duration: e.duration || null,
     thumb: `https://i.ytimg.com/vi/${e.id}/hqdefault.jpg`,
@@ -56,7 +60,7 @@ async function discover(cat) {
   if (!c) throw new Error("unknown category");
   const hit = cache.get(cat);
   if (hit && Date.now() - hit.at < 30 * 60 * 1000) return hit.items;
-  const lists = await Promise.allSettled([...c.q.map((q) => ytList(q, 15)), ...(c.ch || []).map((u) => ytList(u, 15))]);
+  const lists = await Promise.allSettled([...(c.q || []).map((q) => ytList(q, 12)), ...(c.ch || []).map((u) => ytList(u, 12))]);
   const seen = new Set();
   const items = lists
     .flatMap((r) => (r.status === "fulfilled" ? r.value : []))
@@ -118,16 +122,30 @@ const claude = (prompt, { cwd = ROOT, json = true, onLine } = {}) =>
 async function recommend(cats) {
   const pool = (await Promise.all(cats.map((c) => discover(c).catch(() => [])))).flat();
   const list = pool.slice(0, 80).map((v) => ({ id: v.id, title: v.title, channel: v.channel, views: v.views, duration: v.duration, category: CATEGORIES[v.category].label }));
-  const prompt = `你是小红书韩语学习账号的选题编辑。下面是从 YouTube 抓到的韩国短视频候选（JSON）。
-挑出最适合做成"韩中双语字幕 + 重点表达"小红书视频的 8 条：有梗、容易引起中国观众共鸣（获奖感言、职场、恋爱、搞笑、kpop 舞台/舞蹈等）、口语表达多。
-硬性排除：体育（比赛、运动员、奥运等）、政治/时政、负面社会新闻、灾难事故。
-优先短视频：60 秒以内最好，90 秒以内可以，时长未知的看标题判断是否 Shorts。
-只输出 JSON 数组，不要其他文字。每项：{"id":原id,"zh_title":"中文小标题(≤14字)","summary":"一句话讲视频内容","why":"为什么适合/共鸣点","tags":["2-3个标签"],"cover_style":"band|poster|card|reels 之一","score":1-10}
-候选：${JSON.stringify(list)}`;
-  const out = JSON.parse(await claude(prompt));
-  if (out.is_error) throw new Error(out.result?.includes("login") ? "Claude CLI 未登录：在终端运行 claude 然后输入 /login" : out.result || "Claude 调用失败");
-  const text = out.result || "";
-  const arr = JSON.parse(text.slice(text.indexOf("["), text.lastIndexOf("]") + 1));
+  const prompt = `你是小红书"韩语学习 + 韩娱"账号的选题编辑。目标观众是小红书上的：韩语学习者、韩国文化爱好者、K-pop 追星族、韩综爱好者（大多是 18–30 岁中国女生）。
+下面是从 YouTube 抓到的、本月播放量高的韩国短视频候选（JSON）。挑出 8 条**放到小红书也会有很多人点赞收藏**的。
+
+好选题的标准（按重要性）：
+1. 中国观众**不需要韩国背景知识**也能看懂笑点或共鸣点（太"韩国人才懂"的梗、本土时事、冷门艺人要排除）
+2. 有在中国知名度高的爱豆/演员/综艺（如 BTS、SEVENTEEN、Stray Kids、aespa、IVE、NewJeans、BLACKPINK、Running Man、地球娱乐室 等），或者情绪很强（爆笑、心动、感动、共鸣）
+3. 和中国有关的内容（爱豆说中文、韩国人吃中国菜、谈中国）在小红书特别吃香
+4. 有一两句好学、好用的韩语口语
+5. 60 秒以内最好；播放量高说明最近火
+硬性排除：体育（比赛、运动员、奥运等）、政治/时政、负面社会新闻、灾难事故、低俗擦边。
+
+只输出 JSON 数组，不要其他文字；字符串里不要用英文双引号，引用请用「」。每项：{"id":原id,"zh_title":"中文小标题(≤14字，小红书风格)","summary":"一句话讲视频内容","why":"小红书用户为什么会喜欢（点出人群和情绪）","tags":["2-3个标签"],"cover_style":"band|poster|card|reels 之一","score":1-10}
+`+`候选：${JSON.stringify(list)}`;
+  const ask = async (p) => {
+    const o = JSON.parse(await claude(p));
+    if (o.is_error) throw new Error(o.result?.includes("login") ? "Claude CLI 未登录：在终端运行 claude 然后输入 /login" : o.result || "Claude 调用失败");
+    const t = o.result || "";
+    return JSON.parse(t.slice(t.indexOf("["), t.lastIndexOf("]") + 1));
+  };
+  let arr;
+  try { arr = await ask(prompt); }
+  catch (e) { if (/未登录|Claude 调用失败/.test(e.message)) throw e; arr = await ask(prompt + `
+
+（上次输出不是合法 JSON：${e.message}。这次务必输出合法 JSON。）`); }
   const byId = Object.fromEntries(pool.map((v) => [v.id, v]));
   const picks = arr.filter((r) => byId[r.id]).map((r) => ({ ...byId[r.id], ai: r }));
   writeFileSync(path.join(JOBS, "picks.json"), JSON.stringify({ at: Date.now(), cats, picks }));
@@ -243,7 +261,7 @@ http
       if (u.pathname === "/api/picks") { try { return send(res, 200, JSON.parse(readFileSync(path.join(JOBS, "picks.json"), "utf8"))); } catch { return send(res, 200, { picks: [] }); } }
       if (u.pathname === "/api/retry" && req.method === "POST") { const { id } = await body(req); const j = jobs.find((x) => x.id === id); if (j && j.status === "failed") { Object.assign(j, { status: "queued", error: undefined, steps: 0, stage: -1, last: "排队中" }); saveJobs(); pump(); } return send(res, 200, { ok: true }); }
       if (u.pathname === "/api/discover") return send(res, 200, await discover(u.searchParams.get("cat")));
-      if (u.pathname === "/api/recommend") return send(res, 200, await recommend((u.searchParams.get("cats") || "funny,kpop,meme,speech").split(",")));
+      if (u.pathname === "/api/recommend") return send(res, 200, await recommend((u.searchParams.get("cats") || "idol,variety,kpop,relate").split(",")));
       if (u.pathname === "/api/jobs" && req.method === "GET") return send(res, 200, jobs.map((j) => ({ ...j, outputs: outputsOf(j) })));
       if (u.pathname === "/api/jobs" && req.method === "POST") {
         const items = (await body(req)).items || [];
