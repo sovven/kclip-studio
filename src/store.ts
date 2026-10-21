@@ -49,7 +49,8 @@ const savedTheme = (() => { try { return (localStorage.getItem("kclip-theme") as
 applyTheme(savedTheme);
 
 type State = {
-  trending: { tag: string; views: number }[];
+  buzz: { zh: string; ko: string; why: string }[];
+  trending: { tag: string; query: string; views: number; best: number; songs: string[] }[];
   loadTrending: () => Promise<void>;
   page: Page;
   setPage: (p: Page) => void;
@@ -85,8 +86,12 @@ type State = {
 };
 
 export const useStudio = create<State>((set, get) => ({
+  buzz: [],
   trending: [],
-  loadTrending: async () => { try { set({ trending: await api("/api/trending") }); } catch { /* 忽略 */ } },
+  loadTrending: async () => {
+    api<State["trending"]>("/api/trending").then((trending) => set({ trending })).catch(() => {});
+    api<State["buzz"]>("/api/buzz").then((buzz) => set({ buzz })).catch(() => {});
+  },
   page: "discover",
   setPage: (page) => set({ page }),
   theme: savedTheme,
@@ -107,7 +112,7 @@ export const useStudio = create<State>((set, get) => ({
   openDetail: (detail) => set({ detail }),
   retry: async (id) => { await api("/api/retry", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id }) }); get().pollJobs(); },
   categories: [],
-  selected: ["idol", "variety", "kpop", "relate"],
+  selected: ["buzz", "hot", "idol", "variety"],
   videos: {},
   loading: {},
   picks: [],

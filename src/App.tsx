@@ -200,7 +200,7 @@ function GalleryCard({ v }: { v: Video }) {
 }
 
 function Discover() {
-  const { categories, selected, toggleCat, videos, loading, picks, picking, recommend, query, search, searching, results, loggedIn, trending } = useStudio();
+  const { categories, selected, toggleCat, videos, loading, picks, picking, recommend, query, search, searching, results, loggedIn, trending, buzz } = useStudio();
   const [q, setQ] = useState(query);
   const [dur, setDur] = useState<"all" | "60">("60");
   const [sort, setSort] = useState<"hot" | "mix">("hot");
@@ -254,19 +254,32 @@ function Discover() {
         })}
       </div>
 
+      {buzz.length > 0 && (
+        <div className="mb-3 flex items-center gap-3 overflow-hidden">
+          <span className="w-28 shrink-0 text-xs font-semibold text-muted-foreground">韩网热议 · theqoo</span>
+          <div className="flex gap-1.5 overflow-x-auto pb-1 [scrollbar-width:none]">
+            {buzz.map((t) => (
+              <button key={t.ko} title={t.why} onClick={() => { setQ(t.ko); search(t.ko); }} className="shrink-0 rounded-full bg-card px-3 py-1 text-xs shadow-card transition-colors hover:bg-accent">
+                {t.zh}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {trending.length > 0 && (
         <div className="mb-10 flex items-center gap-3 overflow-hidden">
-          <span className="shrink-0 text-xs font-semibold text-muted-foreground">本周热门</span>
+          <span className="w-28 shrink-0 text-xs font-semibold text-muted-foreground">音源榜 · Melon</span>
           <div className="flex gap-1.5 overflow-x-auto pb-1 [scrollbar-width:none]">
             {trending.slice(0, 16).map((t, i) => (
               <button
                 key={t.tag}
-                onClick={() => { const q = t.tag.slice(1); setQ(q); search(q); }}
+                onClick={() => { setQ(t.query); search(t.query); }}
+                title={`Melon 最高第 ${t.best} 名：${t.songs.join("、")}`}
                 className="flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-xs text-foreground/80 transition-colors hover:bg-secondary"
               >
                 <span className={cn("tabular-nums", i < 3 ? "font-semibold text-primary" : "text-muted-foreground")}>{i + 1}</span>
-                {t.tag.slice(1)}
-                <span className="text-muted-foreground">{fmtViews(t.views)}</span>
+                {t.tag}
+                <span className="text-muted-foreground">《{t.songs[0]}》</span>
               </button>
             ))}
           </div>

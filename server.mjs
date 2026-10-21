@@ -18,8 +18,9 @@ mkdirSync(JOBS, { recursive: true });
 // 频道由 scripts/scout-channels.mjs 按"最新 12 条 Shorts 播放量中位数"筛出来（2026-10 数据），过一段时间重跑一次更新。
 // ch：官方频道 Shorts 页（最新在前）→ 每个频道取最新 12 条，再按播放量排 = 最近火的；q：搜索补充
 export const CATEGORIES = {
+  hot: { label: "韩国本周热门", q: [] }, // 搜索词来自 Melon 实时榜前 10 的艺人
+  buzz: { label: "韩网热议", q: [] }, // 搜索词来自 theqoo HOT 热帖（Haiku 提炼）
   idol: { label: "爱豆日常·综艺", ch: ["https://www.youtube.com/@BLACKPINK/shorts", "https://www.youtube.com/@BABYMONSTER/shorts", "https://www.youtube.com/@NewJeans_official/shorts", "https://www.youtube.com/@StrayKids/shorts", "https://www.youtube.com/@ILLIT_official/shorts", "https://www.youtube.com/@cortis_bighit/shorts", "https://www.youtube.com/@TXT_bighit/shorts", "https://www.youtube.com/@BTS/shorts", "https://www.youtube.com/@RESCENE_official/shorts", "https://www.youtube.com/@aespa/shorts", "https://www.youtube.com/@TWICE/shorts", "https://www.youtube.com/@ATEEZofficial/shorts", "https://www.youtube.com/@IVEstarship/shorts", "https://www.youtube.com/@LESSERAFIM_official/shorts", "https://www.youtube.com/@NCTDREAM/shorts", "https://www.youtube.com/@pledis17/shorts"] },
-  kpop: { label: "K-POP 舞台·挑战", ch: ["https://www.youtube.com/@SMTOWN/shorts", "https://www.youtube.com/@theblacklabel/shorts", "https://www.youtube.com/@BOYNEXTDOOR_official/shorts", "https://www.youtube.com/@TWS_PLEDIS/shorts", "https://www.youtube.com/@NCTsmtown/shorts", "https://www.youtube.com/@ITZY/shorts", "https://www.youtube.com/@PLAVE_official/shorts", "https://www.youtube.com/@jypentertainment/shorts", "https://www.youtube.com/@KBSKpop/shorts"] },
   variety: { label: "韩综名场面", ch: ["https://www.youtube.com/@ddeunddeun/shorts", "https://www.youtube.com/@SBSRunningMan/shorts", "https://www.youtube.com/@JTBCVoyage/shorts", "https://www.youtube.com/@workman/shorts", "https://www.youtube.com/@WassupMan/shorts", "https://www.youtube.com/@mmtg_official/shorts", "https://www.youtube.com/@SBSCatch/shorts", "https://www.youtube.com/@mbicnews/shorts"] },
   drama: { label: "热播韩剧", ch: ["https://www.youtube.com/@SBSCatch/shorts", "https://www.youtube.com/@netflixkcontent/shorts", "https://www.youtube.com/@NetflixKorea/shorts", "https://www.youtube.com/@jtbcdrama/shorts"] },
   relate: { label: "恋爱·职场共鸣", ch: ["https://www.youtube.com/@shortbox/shorts", "https://www.youtube.com/@nerdult/shorts", "https://www.youtube.com/@workman/shorts"] },
@@ -35,7 +36,7 @@ const run = (cmd, args, opts = {}) =>
   );
 
 const ytList = async (src, n) => {
-  const url = src.startsWith("http") ? src : `ytsearch${n}:${src}`;
+  const url = src.startsWith("http") ? src : src.startsWith("date:") ? `ytsearchdate${n}:${src.slice(5)}` : `ytsearch${n}:${src}`;
   // 注意不要加 youtube:lang=ko：韩文界面的"조회수 1.7만회"yt-dlp 解析不了，播放量会变成 0
   const out = await run(YTDLP, ["--flat-playlist", "-J", "--playlist-items", `1-${n}`, url]);
   const pl = JSON.parse(out);
@@ -57,23 +58,124 @@ const BLOCK = /올림픽|금메달|은메달|동메달|선수|경기|축구|야�
 const keep = (v) => !BLOCK.test(v.title || "");
 
 const cache = new Map(); // cat → {at, items}
+// 视频详情（不下载）：分类、YouTube 识别的原始语言、简介。用来去掉纯舞蹈/纯音乐，只留有台词的。
+// 详情缓存存盘，查过的不再查（减少对 YouTube 的请求，避免触发"确认你不是机器人"）
+const META_FILE = path.join(JOBS, "meta.json");
+const meta = new Map(existsSync(META_FILE) ? Object.entries(JSON.parse(readFileSync(META_FILE, "utf8"))) : []);
+const saveMeta = () => writeFileSync(META_FILE, JSON.stringify(Object.fromEntries(meta)));
+let ytCooldownUntil = 0;
+const DANCE = /챌린지|challenge|dance|댄스|안무|직캠|fancam|M\/V|\bMV\b|teaser|티저|performance|퍼포먼스|OUT NOW|코레오|choreo/i;
+const fetchMeta = (v) =>
+  meta.has(v.id)
+    ? Promise.resolve(meta.get(v.id))
+    : Date.now() < ytCooldownUntil
+    ? Promise.resolve(null)
+    : run(YTDLP, ["-J", "--skip-download", "--no-playlist", v.url], { timeout: 60000 })
+        .then((out) => {
+          const j = JSON.parse(out);
+          const ac = Object.keys(j.automatic_captions || {});
+          const orig = (ac.find((k) => k.endsWith("-orig")) || "").replace("-orig", "");
+          const m = { categories: j.categories || [], orig, desc: (j.description || "").replace(/\s+/g, " ").slice(0, 160), duration: j.duration ?? v.duration };
+          // speech: "ko"=有韩语台词，"none"=没识别到语音，"other"=识别成别的语言（多半是歌）
+          m.speech = orig === "ko" ? "ko" : orig ? "other" : "none";
+          meta.set(v.id, m);
+          return m;
+        })
+        .catch((e) => {
+          if (/not a bot|Sign in to confirm/i.test(e.message)) { ytCooldownUntil = Date.now() + 30 * 60 * 1000; console.warn("YouTube 人机验证，详情查询暂停 30 分钟"); }
+          return null;
+        });
+
+// 有内容才要：音乐类且没有韩语台词、或被识别成外语（歌声）、或标题明显是舞蹈/MV 的，全部去掉
+async function enrich(items, limit = 15) {
+  const top = items.slice(0, Math.max(limit, 30));
+  const look = top.slice(0, limit);
+  for (let i = 0; i < look.length; i += 3) await Promise.all(look.slice(i, i + 3).map(fetchMeta));
+  saveMeta();
+  return top
+    .map((v) => ({ ...v, ...(meta.get(v.id) ? { meta: meta.get(v.id), duration: meta.get(v.id).duration } : {}) }))
+    .filter((v) => {
+      const m = v.meta;
+      if (DANCE.test(v.title)) return false; // 舞蹈、MV、Challenge：不管有没有声音都不要
+      if (!m) return true;
+      if (m.speech === "other") return false;
+      if (m.categories.includes("Music") && m.speech !== "ko") return false;
+      return true;
+    })
+    .sort((a, b) => (b.meta?.speech === "ko") - (a.meta?.speech === "ko") || b.views - a.views);
+}
+
+// ---------- 韩国真实热度：Melon 实时音源榜 ----------
+// 前 50 首按名次加权（第 1 名 50 分），统计艺人热度。比"从自己挑的频道里数标签"可靠得多。
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36";
+let melonCache = { at: 0, artists: [] };
+const decode = (s) => s.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/\s+/g, " ").trim();
+async function melonHot() {
+  if (Date.now() - melonCache.at < 60 * 60 * 1000 && melonCache.artists.length) return melonCache.artists;
+  const html = await (await fetch("https://www.melon.com/chart/index.htm", { headers: { "user-agent": UA } })).text();
+  const rows = html.split(/<tr class="lst(?:50|100)"/).slice(1, 51);
+  const score = new Map();
+  rows.forEach((r, i) => {
+    const song = decode((r.match(/rank01">[\s\S]*?<a[^>]*>([^<]+)<\/a>/) || [])[1] || "");
+    const artists = [...new Set([...(((r.match(/rank02">([\s\S]*?)<\/div>/) || [])[1]) || "").matchAll(/<a[^>]*>([^<]+)<\/a>/g)].map((m) => decode(m[1])))];
+    for (const a of artists) {
+      const cur = score.get(a) || { name: a, score: 0, songs: [], best: 99 };
+      cur.score += 50 - i;
+      cur.best = Math.min(cur.best, i + 1);
+      if (cur.songs.length < 2) cur.songs.push(song);
+      score.set(a, cur);
+    }
+  });
+  // 搜索用名：有韩文括号就用韩文（"RESCENE (리센느)" → 리센느），否则原名
+  const artists = [...score.values()]
+    .sort((a, b) => b.score - a.score)
+    .map((a) => ({ ...a, query: (a.name.match(/\(([^)]*[\uAC00-\uD7A3][^)]*)\)/) || [])[1] || a.name.replace(/\s*\(.*\)/, "") }));
+  melonCache = { at: Date.now(), artists };
+  return artists;
+}
+
+// ---------- 韩网热议：theqoo HOT（韩国最大的女粉社区热帖）----------
+// 帖子标题 → 便宜的 Haiku 挑出适合小红书韩语视频的话题 + 韩文搜索词；缓存 1 小时
+let buzzCache = { at: 0, titles: [], topics: [] };
+const unesc = (s) => s.replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").trim();
+async function buzz() {
+  if (Date.now() - buzzCache.at < 60 * 60 * 1000 && buzzCache.topics.length) return buzzCache;
+  const html = await (await fetch("https://theqoo.net/hot", { headers: { "user-agent": UA } })).text();
+  const titles = [...new Set([...html.matchAll(/href="\/hot\/\d+"[^>]*>([^<]{4,120})/g)].map((m) => unesc(m[1])))].filter((t) => !BLOCK.test(t)).slice(0, 50);
+  const prompt = `下面是韩国女粉社区 theqoo 的 HOT 热帖标题（实时）。挑出 10 个"韩国人正在热议、放到小红书（中国 18-30 岁女生，韩语学习/韩娱/追星/综艺）也会有人看"的话题，并给每个话题一个能在 YouTube 搜到相关短视频的韩文搜索词。
+优先：爱豆/艺人的有趣瞬间、综艺梗、流行语和梗、生活共鸣（职场、恋爱、家人、MBTI）、韩国文化/方言/习惯。排除：政治、社会负面新闻、八卦丑闻、体育。
+全部用简体中文。只输出 JSON 数组，字符串里不要用英文双引号：[{"zh":"中文话题(≤12字)","ko":"韩文搜索词(2-4个词)","why":"一句话为什么小红书会喜欢"}]
+标题：\n${titles.map((t, i) => `${i + 1}. ${t}`).join("\n")}`;
+  const o = JSON.parse(await claude(prompt, { model: "haiku" }));
+  if (o.is_error) throw new Error(o.result || "Claude 调用失败");
+  const t = o.result || "";
+  const topics = JSON.parse(t.slice(t.indexOf("["), t.lastIndexOf("]") + 1));
+  buzzCache = { at: Date.now(), titles, topics };
+  return buzzCache;
+}
+
 async function discover(cat) {
   const c = CATEGORIES[cat];
   if (!c) throw new Error("unknown category");
   const hit = cache.get(cat);
   if (hit && Date.now() - hit.at < 30 * 60 * 1000) return hit.items;
-  const lists = await Promise.allSettled([...(c.q || []).map((q) => ytList(q, 12)), ...(c.ch || []).map((u) => ytList(u, 12))]);
+  const hotArtists = cat === "hot" ? (await melonHot().catch(() => [])).slice(0, 10) : [];
+  const buzzTopics = cat === "buzz" ? (await buzz().catch(() => ({ topics: [] }))).topics : [];
+  const q = cat === "hot" ? hotArtists.map((a) => `date:${a.query}`) : cat === "buzz" ? buzzTopics.map((t) => `date:${t.ko}`) : c.q || [];
+  const lists = await Promise.allSettled([...q.map((x) => ytList(x, 12)), ...(c.ch || []).map((u) => ytList(u, 12))]);
   const seen = new Set();
   const items = lists
     .flatMap((r) => (r.status === "fulfilled" ? r.value : []))
     .filter((v) => v.id && !seen.has(v.id) && seen.add(v.id))
     .filter((v) => v.duration == null || (v.duration >= 10 && v.duration <= 120))
     .filter(keep)
+    // 热门艺人：标题或频道里必须出现艺人名，防止搜到无关视频
+    .filter((v) => cat !== "hot" || hotArtists.some((a) => [a.query, a.name.replace(/\s*\(.*\)/, "")].some((n) => n && (v.title + " " + v.channel).toLowerCase().includes(n.toLowerCase()))))
     .map((v) => ({ ...v, category: cat }))
-    .sort((a, b) => b.views - a.views)
-    .slice(0, 30);
-  cache.set(cat, { at: Date.now(), items });
-  return items;
+    .sort((a, b) => b.views - a.views);
+  const rich = (await enrich(items, 15)).slice(0, 30);
+  cache.set(cat, { at: Date.now(), items: rich });
+  return rich;
 }
 
 async function search(q) {
@@ -84,8 +186,9 @@ async function search(q) {
     .filter((v) => v.duration == null || (v.duration >= 10 && v.duration <= 120))
     .filter(keep)
     .map((v) => ({ ...v, category: "search" }));
-  cache.set(key, { at: Date.now(), items });
-  return items;
+  const rich = await enrich(items, 12);
+  cache.set(key, { at: Date.now(), items: rich });
+  return rich;
 }
 
 // Claude CLI 登录状态（制作和 AI 推荐都靠它）
@@ -115,9 +218,10 @@ function trending(limit = 20) {
 }
 
 // ---------- Claude Code 无头调用 ----------
-const claude = (prompt, { cwd = ROOT, json = true, onLine } = {}) =>
+const claude = (prompt, { cwd = ROOT, json = true, onLine, model } = {}) =>
   new Promise((res, rej) => {
     const args = ["-p", "--output-format", onLine ? "stream-json" : "json"];
+    if (model) args.push("--model", model);
     if (onLine) args.push("--verbose"); // stream-json 必须带 verbose；json 模式带了会变成消息数组
     if (onLine) args.push("--allowedTools", "Bash", "Read", "Write", "Edit", "Glob", "Grep", "Skill", "--add-dir", SKILL, NODE_MODULES);
     const p = spawn("claude", args, { cwd, shell: true, windowsHide: true });
@@ -136,7 +240,7 @@ const claude = (prompt, { cwd = ROOT, json = true, onLine } = {}) =>
 
 async function recommend(cats) {
   const pool = (await Promise.all(cats.map((c) => discover(c).catch(() => [])))).flat();
-  const list = pool.slice(0, 80).map((v) => ({ id: v.id, title: v.title, channel: v.channel, views: v.views, duration: v.duration, category: CATEGORIES[v.category].label }));
+  const list = pool.slice(0, 80).map((v) => ({ id: v.id, title: v.title, channel: v.channel, views: v.views, duration: v.duration, category: CATEGORIES[v.category]?.label, speech: v.meta?.speech, desc: v.meta?.desc }));
   const prompt = `你是小红书"韩语学习 + 韩娱"账号的选题编辑。目标观众是小红书上的：韩语学习者、韩国文化爱好者、K-pop 追星族、韩综爱好者（大多是 18–30 岁中国女生）。
 下面是从 YouTube 抓到的、本月播放量高的韩国短视频候选（JSON）。挑出 8 条**放到小红书也会有很多人点赞收藏**的。
 
@@ -146,10 +250,11 @@ async function recommend(cats) {
 3. 和中国有关的内容（爱豆说中文、韩国人吃中国菜、谈中国）在小红书特别吃香
 4. 有一两句好学、好用的韩语口语
 5. 60 秒以内最好；播放量高说明最近火
-硬性排除：体育（比赛、运动员、奥运等）、政治/时政、负面社会新闻、灾难事故、低俗擦边。
+硬性排除：纯舞蹈/纯音乐/MV/舞台直拍（没有台词就没法做字幕；speech 字段="ko" 表示有韩语台词，优先选）、体育（比赛、运动员、奥运等）、政治/时政、负面社会新闻、灾难事故、低俗擦边。
 
 只输出 JSON 数组，不要其他文字；字符串里不要用英文双引号，引用请用「」。每项：{"id":原id,"zh_title":"中文小标题(≤14字，小红书风格)","summary":"一句话讲视频内容","why":"小红书用户为什么会喜欢（点出人群和情绪）","tags":["2-3个标签"],"cover_style":"band|poster|card|reels 之一","score":1-10}
-`+`本周热门话题（按播放量）：${trending(15).map((t) => t.tag).join(" ")}
+`+`韩网正在热议（theqoo HOT）：${(await buzz().catch(() => ({ topics: [] }))).topics.map((t) => t.zh).join("、")}
+韩国音源榜最火的艺人（Melon，仅供参考，不要只选音乐内容）：${(await melonHot().catch(() => [])).slice(0, 15).map((a) => a.name).join("、")}
 候选：${JSON.stringify(list)}`;
   const ask = async (p) => {
     const o = JSON.parse(await claude(p));
@@ -276,9 +381,10 @@ http
       if (u.pathname === "/api/search") return send(res, 200, await search(u.searchParams.get("q") || ""));
       if (u.pathname === "/api/picks") { try { return send(res, 200, JSON.parse(readFileSync(path.join(JOBS, "picks.json"), "utf8"))); } catch { return send(res, 200, { picks: [] }); } }
       if (u.pathname === "/api/retry" && req.method === "POST") { const { id } = await body(req); const j = jobs.find((x) => x.id === id); if (j && j.status === "failed") { Object.assign(j, { status: "queued", error: undefined, steps: 0, stage: -1, last: "排队中" }); saveJobs(); pump(); } return send(res, 200, { ok: true }); }
-      if (u.pathname === "/api/trending") return send(res, 200, trending());
+      if (u.pathname === "/api/buzz") return send(res, 200, (await buzz()).topics);
+      if (u.pathname === "/api/trending") return send(res, 200, (await melonHot()).slice(0, 16).map((a) => ({ tag: a.name, query: a.query, views: a.score, best: a.best, songs: a.songs })));
       if (u.pathname === "/api/discover") return send(res, 200, await discover(u.searchParams.get("cat")));
-      if (u.pathname === "/api/recommend") return send(res, 200, await recommend((u.searchParams.get("cats") || "idol,variety,kpop,relate").split(",")));
+      if (u.pathname === "/api/recommend") return send(res, 200, await recommend((u.searchParams.get("cats") || "buzz,hot,idol,variety").split(",")));
       if (u.pathname === "/api/jobs" && req.method === "GET") return send(res, 200, jobs.map((j) => ({ ...j, outputs: outputsOf(j) })));
       if (u.pathname === "/api/jobs" && req.method === "POST") {
         const items = (await body(req)).items || [];
