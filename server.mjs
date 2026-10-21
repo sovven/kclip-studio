@@ -282,7 +282,7 @@ function jobPrompt(j) {
   return `用 xhs-bilingual-clip skill（在 ${SKILL}，先读 SKILL.md）把这个视频做成小红书双语字幕视频：${j.url}
 - 当前目录就是项目目录：把 ${SKILL}/template 的内容复制到这里，node_modules 用 junction 指向 ${NODE_MODULES}（PowerShell New-Item -ItemType Junction），字体从 C:\\Windows\\Fonts 复制 NotoSansSC-VF.ttf / NotoSansKR-VF.ttf 到 public/fonts。
 - 视频标题参考：${j.title}${j.note ? `；用户备注：${j.note}` : ""}
-- 封面样式：${j.coverStyle}（config.ts 的 COVER_STYLE：band 黑底大标题 / poster 大字报 / card 韩中对照卡 / reels Reels 款）；高亮色 ACCENT = ${j.accent || "#8fd3ff"}。封面底图挑人物清楚、没有烧录大字幕的一帧。
+- 封面样式：${j.coverStyle}（config.ts 的 COVER_STYLE：band 黑底大标题 / poster 大字报 / card 韩中对照卡 / reels Reels 款）；配色 PALETTE = "${/^[a-z]+$/.test(j.accent || "") ? j.accent : "yellow"}"（config.ts，字幕/标题/单词卡/封面都跟着变）。版式要守小红书安全区：顶部 150px、底部 y>1480、右侧 140px 不放字；一句字幕最多 2 行原文 + 1 行中文，超了就拆。封面底图挑人物清楚、没有烧录大字幕的一帧。
 - 全自动，不要提问；听不清的句子删掉并记录。python 不可用，用 node。
 - 最后必须产出：out/成片.mp4、out/封面_3比4.png、out/小红书文案.txt、out/剪映素材/（npm run pack），以及 out/summary.json：{"title":"中文标题","summary":"内容一句话","uncertain":["删掉或不确定的句子"],"cues":字幕条数}`;
 }

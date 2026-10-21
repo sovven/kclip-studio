@@ -25,8 +25,13 @@ const COVER: Record<CoverStyle, { label: string; hint: string }> = {
   card: { label: "韩中对照卡", hint: "学习感最强" },
   reels: { label: "Reels 款", hint: "ins 爆款同款" },
 };
-const ACCENTS = [
-  { c: "#8fd3ff", n: "浅蓝" }, { c: "#c6f432", n: "荧光绿" }, { c: "#ffde3b", n: "黄" }, { c: "#ff7ab6", n: "粉" }, { c: "#ffffff", n: "白" },
+// 配色预设，和 xhs-bilingual-clip 模板 config.ts 的 PALETTES 一致（黑底上用低饱和高明度色）
+const PALETTES = [
+  { id: "yellow", n: "字幕黄", c: "#ffde3b", zh: "#ffffff" },
+  { id: "apricot", n: "奶油杏", c: "#f6c790", zh: "#f2e2c1" },
+  { id: "mint", n: "薄荷", c: "#a3ede5", zh: "#f4f2e6" },
+  { id: "rose", n: "雾粉", c: "#f2b3c3", zh: "#f7ecef" },
+  { id: "haze", n: "灰蓝", c: "#b0c8d3", zh: "#f3e3d3" },
 ];
 const STAGES = ["下载", "听写", "字幕", "渲染", "封面", "文案"];
 const fmtViews = (n: number) => (!n ? "—" : n >= 1e8 ? `${(n / 1e8).toFixed(1)}亿` : n >= 1e4 ? `${(n / 1e4).toFixed(1)}万` : String(n));
@@ -368,7 +373,7 @@ function DetailSheet() {
   const { detail: v, openDetail, produce, addDraft, jobs, loggedIn } = useStudio();
   const [cover, setCover] = useState<CoverStyle>("band");
   const [note, setNote] = useState("");
-  const [accent, setAccent] = useState(ACCENTS[0].c);
+  const [accent, setAccent] = useState(PALETTES[0].id);
   useEffect(() => { if (v) { setCover(v.ai?.cover_style || "band"); setNote(""); } }, [v]);
   const job = v && jobs.find((j) => j.vid === v.id && j.status !== "failed");
   return (
@@ -414,12 +419,15 @@ function DetailSheet() {
               </div>
 
               <div>
-                <div className="mb-2.5 text-sm font-semibold">高亮色 <span className="font-normal text-muted-foreground">（标题关键词、封面）</span></div>
+                <div className="mb-2.5 text-sm font-semibold">配色 <span className="font-normal text-muted-foreground">（标题关键词、字幕、单词卡、封面）</span></div>
                 <div className="flex gap-2.5">
-                  {ACCENTS.map((x) => (
-                    <Tooltip key={x.c}>
+                  {PALETTES.map((x) => (
+                    <Tooltip key={x.id}>
                       <TooltipTrigger asChild>
-                        <button onClick={() => setAccent(x.c)} aria-label={x.n} className={cn("size-8 rounded-full ring-2 ring-offset-2 ring-offset-background transition", accent === x.c ? "ring-primary" : "ring-transparent")} style={{ background: x.c, boxShadow: "inset 0 0 0 1px rgba(0,0,0,.12)" }} />
+                        <button onClick={() => setAccent(x.id)} aria-label={x.n} className={cn("flex h-9 w-11 flex-col items-center justify-center gap-0.5 rounded-lg bg-black ring-2 ring-offset-2 ring-offset-background transition", accent === x.id ? "ring-primary" : "ring-transparent")}>
+                          <span className="text-[13px] font-black leading-none" style={{ color: x.c }}>字</span>
+                          <span className="h-1 w-6 rounded-full" style={{ background: x.zh }} />
+                        </button>
                       </TooltipTrigger>
                       <TooltipContent>{x.n}</TooltipContent>
                     </Tooltip>
