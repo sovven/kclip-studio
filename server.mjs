@@ -18,15 +18,16 @@ mkdirSync(JOBS, { recursive: true });
 // 频道由 scripts/scout-channels.mjs 按"最新 12 条 Shorts 播放量中位数"筛出来（2026-10 数据），过一段时间重跑一次更新。
 // ch：官方频道 Shorts 页（最新在前）→ 每个频道取最新 12 条，再按播放量排 = 最近火的；q：搜索补充
 export const CATEGORIES = {
-  hot: { label: "韩国本周热门", q: [] }, // 搜索词来自 Melon 实时榜前 10 的艺人
   buzz: { label: "韩网热议", q: [] }, // 搜索词来自 theqoo HOT 热帖（Haiku 提炼）
-  idol: { label: "爱豆日常·综艺", ch: ["https://www.youtube.com/@BLACKPINK/shorts", "https://www.youtube.com/@BABYMONSTER/shorts", "https://www.youtube.com/@NewJeans_official/shorts", "https://www.youtube.com/@StrayKids/shorts", "https://www.youtube.com/@ILLIT_official/shorts", "https://www.youtube.com/@cortis_bighit/shorts", "https://www.youtube.com/@TXT_bighit/shorts", "https://www.youtube.com/@BTS/shorts", "https://www.youtube.com/@RESCENE_official/shorts", "https://www.youtube.com/@aespa/shorts", "https://www.youtube.com/@TWICE/shorts", "https://www.youtube.com/@ATEEZofficial/shorts", "https://www.youtube.com/@IVEstarship/shorts", "https://www.youtube.com/@LESSERAFIM_official/shorts", "https://www.youtube.com/@NCTDREAM/shorts", "https://www.youtube.com/@pledis17/shorts"] },
+  hot: { label: "韩国热门艺人", q: [] }, // 搜索词来自 Melon 实时榜前 10 的艺人
+  idol: { label: "爱豆日常", ch: ["https://www.youtube.com/@BLACKPINK/shorts", "https://www.youtube.com/@BABYMONSTER/shorts", "https://www.youtube.com/@NewJeans_official/shorts", "https://www.youtube.com/@StrayKids/shorts", "https://www.youtube.com/@ILLIT_official/shorts", "https://www.youtube.com/@cortis_bighit/shorts", "https://www.youtube.com/@TXT_bighit/shorts", "https://www.youtube.com/@BTS/shorts", "https://www.youtube.com/@RESCENE_official/shorts", "https://www.youtube.com/@aespa/shorts", "https://www.youtube.com/@TWICE/shorts", "https://www.youtube.com/@ATEEZofficial/shorts", "https://www.youtube.com/@IVEstarship/shorts", "https://www.youtube.com/@LESSERAFIM_official/shorts", "https://www.youtube.com/@NCTDREAM/shorts", "https://www.youtube.com/@pledis17/shorts"] },
   variety: { label: "韩综名场面", ch: ["https://www.youtube.com/@ddeunddeun/shorts", "https://www.youtube.com/@SBSRunningMan/shorts", "https://www.youtube.com/@JTBCVoyage/shorts", "https://www.youtube.com/@workman/shorts", "https://www.youtube.com/@WassupMan/shorts", "https://www.youtube.com/@mmtg_official/shorts", "https://www.youtube.com/@SBSCatch/shorts", "https://www.youtube.com/@mbicnews/shorts"] },
+  talk: { label: "名人访谈·人生感悟", ch: ["https://www.youtube.com/@ddeunddeun/shorts"], q: ["인생 조언 연예인 인터뷰 shorts", "유퀴즈 감동 명언 shorts", "연예인 인생 명언 shorts", "짠한형 shorts", "살롱드립 shorts"] },
+  street: { label: "街头采访", q: ["길거리 인터뷰 shorts", "거리 인터뷰 한국인 반응 shorts", "시민 인터뷰 웃긴 shorts"] },
+  fortune: { label: "命理·占卜综艺", q: ["사주 연예인 shorts", "역술가 연예인 사주 풀이 shorts", "무당 연예인 점 shorts", "타로 연예인 shorts"] },
+  warm: { label: "温暖治愈", q: ["감동 실화 shorts", "할머니 할아버지 감동 shorts", "아빠 딸 감동 shorts", "가족 웃긴 순간 shorts", "몰래카메라 감동 shorts"] },
+  relate: { label: "恋爱·职场共鸣", ch: ["https://www.youtube.com/@shortbox/shorts", "https://www.youtube.com/@nerdult/shorts", "https://www.youtube.com/@workman/shorts"], q: ["연애 공감 shorts", "직장인 공감 shorts"] },
   drama: { label: "热播韩剧", ch: ["https://www.youtube.com/@SBSCatch/shorts", "https://www.youtube.com/@netflixkcontent/shorts", "https://www.youtube.com/@NetflixKorea/shorts", "https://www.youtube.com/@jtbcdrama/shorts"] },
-  relate: { label: "恋爱·职场共鸣", ch: ["https://www.youtube.com/@shortbox/shorts", "https://www.youtube.com/@nerdult/shorts", "https://www.youtube.com/@workman/shorts"] },
-  china: { label: "韩国人×中国", ch: ["https://www.youtube.com/@WayV/shorts", "https://www.youtube.com/@NCT127/shorts", "https://www.youtube.com/@NCTsmtown/shorts"], q: ["아이돌 중국어 shorts", "중국어 하는 아이돌", "한국인 중국 음식 먹방 shorts"] },
-  speech: { label: "感动·获奖感言", q: ["수상소감 shorts", "백상예술대상 수상소감", "청룡영화상 수상소감"] },
-  wys: { label: "外研社同款来源", ch: ["https://www.youtube.com/@ddeunddeun/shorts", "https://www.youtube.com/@SBSRunningMan/shorts", "https://www.youtube.com/@WassupMan/shorts", "https://www.youtube.com/@shortbox/shorts", "https://www.youtube.com/@nerdult/shorts", "https://www.youtube.com/@mbicnews/shorts"] },
 };
 
 
@@ -246,7 +247,7 @@ async function recommend(cats) {
 
 好选题的标准（按重要性）：
 1. 中国观众**不需要韩国背景知识**也能看懂笑点或共鸣点（太"韩国人才懂"的梗、本土时事、冷门艺人要排除）
-2. 有在中国知名度高的爱豆/演员/综艺（如 BTS、SEVENTEEN、Stray Kids、aespa、IVE、NewJeans、BLACKPINK、Running Man、地球娱乐室 等），或者情绪很强（爆笑、心动、感动、共鸣）
+2. 小红书上已验证好卖的类型：名人访谈里的人生感悟（如 Rain 聊 JYP）、韩国命理/占卜大师锐评明星、街头采访、家人/老人/惊喜等温暖瞬间、生活共鸣（MBTI、职场、恋爱）、综艺爆笑名场面；或在中国知名度高的爱豆/演员/综艺（如 BTS、SEVENTEEN、Stray Kids、aespa、IVE、NewJeans、BLACKPINK、Running Man、地球娱乐室 等），或者情绪很强（爆笑、心动、感动、共鸣）
 3. 和中国有关的内容（爱豆说中文、韩国人吃中国菜、谈中国）在小红书特别吃香
 4. 有一两句好学、好用的韩语口语
 5. 60 秒以内最好；播放量高说明最近火
@@ -384,7 +385,7 @@ http
       if (u.pathname === "/api/buzz") return send(res, 200, (await buzz()).topics);
       if (u.pathname === "/api/trending") return send(res, 200, (await melonHot()).slice(0, 16).map((a) => ({ tag: a.name, query: a.query, views: a.score, best: a.best, songs: a.songs })));
       if (u.pathname === "/api/discover") return send(res, 200, await discover(u.searchParams.get("cat")));
-      if (u.pathname === "/api/recommend") return send(res, 200, await recommend((u.searchParams.get("cats") || "buzz,hot,idol,variety").split(",")));
+      if (u.pathname === "/api/recommend") return send(res, 200, await recommend((u.searchParams.get("cats") || "buzz,variety,talk,warm").split(",")));
       if (u.pathname === "/api/jobs" && req.method === "GET") return send(res, 200, jobs.map((j) => ({ ...j, outputs: outputsOf(j) })));
       if (u.pathname === "/api/jobs" && req.method === "POST") {
         const items = (await body(req)).items || [];

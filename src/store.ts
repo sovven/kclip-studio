@@ -112,7 +112,7 @@ export const useStudio = create<State>((set, get) => ({
   openDetail: (detail) => set({ detail }),
   retry: async (id) => { await api("/api/retry", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id }) }); get().pollJobs(); },
   categories: [],
-  selected: ["buzz", "hot", "idol", "variety"],
+  selected: ["buzz", "variety", "talk", "warm"],
   videos: {},
   loading: {},
   picks: [],
