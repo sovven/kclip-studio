@@ -195,14 +195,13 @@ async function search(q) {
 // Claude CLI 登录状态（制作和 AI 推荐都靠它）
 let health = { loggedIn: null, at: 0 };
 async function getHealth() {
-  if (Date.now() - health.at < 60000) return health;
-  try {
-    const out = await run("claude", ["auth", "status"], { shell: true, timeout: 30000 });
+  if (Date.now() - health.at > 60000) try {
+    const out = await run("claude", ["auth", "status"], { shell: true, timeout: 30000, env: claudeEnv() });
     health = { loggedIn: !!JSON.parse(out).loggedIn, at: Date.now() };
   } catch {
     health = { loggedIn: false, at: Date.now() };
   }
-  return health;
+  return { ...health, mode: authMode, loginCmd: authMode === "official" ? `$env:CLAUDE_CONFIG_DIR="${OFFICIAL_DIR}"; claude.cmd /login` : "claude.cmd /login" };
 }
 
 // 本周热门爱豆/话题：已抓取候选里的 #标签，按播放量加权（去掉 #shorts 这类通用标签）
@@ -219,13 +218,26 @@ function trending(limit = 20) {
 }
 
 // ---------- Claude Code 无头调用 ----------
-const claude = (prompt, { cwd = ROOT, json = true, onLine, model } = {}) =>
+// 去掉从宿主 Claude 会话继承来的鉴权/会话变量，让子进程用 CLI 自己的登录
+const BASE_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(ANTHROPIC_|CLAUDE_CODE_|CLAUDECODE$|CLAUDE_AGENT_|CLAUDE_CONFIG_DIR$)/.test(k)));
+// 线路切换：relay = ~/.claude/settings.json 里配的中转站；official = 独立配置目录里登录的官方账号（不动 ~/.claude）
+const OFFICIAL_DIR = "D:/Tools/claude-official";
+const AUTH_FILE = path.join(JOBS, "auth.json");
+let authMode = (() => { try { return JSON.parse(readFileSync(AUTH_FILE, "utf8")).mode === "official" ? "official" : "relay"; } catch { return "relay"; } })();
+const claudeEnv = () => (authMode === "official" ? { ...BASE_ENV, CLAUDE_CONFIG_DIR: OFFICIAL_DIR } : BASE_ENV);
+function setAuthMode(mode) {
+  authMode = mode === "official" ? "official" : "relay";
+  mkdirSync(OFFICIAL_DIR, { recursive: true });
+  writeFileSync(AUTH_FILE, JSON.stringify({ mode: authMode }));
+  health.at = 0; // 换线路后重新检查登录
+}
+const claude =(prompt, { cwd = ROOT, json = true, onLine, model } = {}) =>
   new Promise((res, rej) => {
     const args = ["-p", "--output-format", onLine ? "stream-json" : "json"];
     if (model) args.push("--model", model);
     if (onLine) args.push("--verbose"); // stream-json 必须带 verbose；json 模式带了会变成消息数组
-    if (onLine) args.push("--allowedTools", "Bash", "Read", "Write", "Edit", "Glob", "Grep", "Skill", "--add-dir", SKILL, NODE_MODULES);
-    const p = spawn("claude", args, { cwd, shell: true, windowsHide: true });
+    if (onLine) args.push("--allowedTools", "Bash", "PowerShell", "Read", "Write", "Edit", "Glob", "Grep", "Skill", "--add-dir", SKILL, NODE_MODULES);
+    const p = spawn("claude", args, { cwd, shell: true, windowsHide: true, env: claudeEnv() });
     p.stdin.end(prompt); // 提示词走 stdin，避免 Windows 命令行转义问题
     let buf = "", all = "";
     p.stdout.on("data", (d) => {
@@ -379,6 +391,7 @@ http
     try {
       if (u.pathname === "/api/categories") return send(res, 200, Object.entries(CATEGORIES).map(([id, c]) => ({ id, label: c.label })));
       if (u.pathname === "/api/health") return send(res, 200, await getHealth());
+      if (u.pathname === "/api/auth-mode" && req.method === "POST") { setAuthMode((await body(req)).mode); return send(res, 200, await getHealth()); }
       if (u.pathname === "/api/search") return send(res, 200, await search(u.searchParams.get("q") || ""));
       if (u.pathname === "/api/picks") { try { return send(res, 200, JSON.parse(readFileSync(path.join(JOBS, "picks.json"), "utf8"))); } catch { return send(res, 200, { picks: [] }); } }
       if (u.pathname === "/api/retry" && req.method === "POST") { const { id } = await body(req); const j = jobs.find((x) => x.id === id); if (j && j.status === "failed") { Object.assign(j, { status: "queued", error: undefined, steps: 0, stage: -1, last: "排队中" }); saveJobs(); pump(); } return send(res, 200, { ok: true }); }

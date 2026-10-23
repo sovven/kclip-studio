@@ -17,7 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Toaster } from "@/components/ui/sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { useStudio, type CoverStyle, type Draft, type Job, type Page, type Theme, type Video } from "@/store";
+import { useStudio, type AuthMode, type CoverStyle, type Draft, type Job, type Page, type Theme, type Video } from "@/store";
 
 const COVER: Record<CoverStyle, { label: string; hint: string }> = {
   band: { label: "黑底大标题", hint: "外研社同款，稳" },
@@ -94,7 +94,7 @@ function Empty({ icon, title, text, action }: { icon: React.ReactNode; title: st
 
 /* ============ 侧边栏 ============ */
 function Sidebar() {
-  const { page, setPage, theme, setTheme, drafts, jobs, loggedIn } = useStudio();
+  const { page, setPage, theme, setTheme, drafts, jobs, loggedIn, authMode, setAuthMode, loginCmd } = useStudio();
   const active = jobs.filter((j) => j.status === "running" || j.status === "queued").length + drafts.length;
   const done = jobs.filter((j) => j.status === "done").length;
   const nav: { id: Page; label: string; icon: React.ReactNode; count?: number }[] = [
@@ -133,7 +133,18 @@ function Sidebar() {
             <span className={cn("size-2 rounded-full", loggedIn ? "bg-[var(--success)]" : loggedIn === false ? "bg-[var(--warning)]" : "bg-muted-foreground")} />
             {loggedIn ? "Agent 就绪" : loggedIn === false ? "Agent 未登录" : "检查中…"}
           </div>
-          <p className="mt-1 leading-relaxed text-muted-foreground">{loggedIn === false ? "终端运行 claude → /login" : "Claude Code · xhs-bilingual-clip"}</p>
+          <p className="mt-1 break-all leading-relaxed text-muted-foreground">{loggedIn === false ? <>终端运行 <code className="font-mono">{loginCmd}</code></> : "Claude Code · xhs-bilingual-clip"}</p>
+          <div className="mt-2.5 flex items-center justify-between">
+            <span className="text-muted-foreground">线路</span>
+            <Segmented<AuthMode>
+              value={authMode}
+              onChange={(m) => m !== authMode && setAuthMode(m).catch((e) => toast.error((e as Error).message))}
+              options={[
+                { v: "relay", label: "中转站" },
+                { v: "official", label: "官方账号" },
+              ]}
+            />
+          </div>
         </div>
         <div className="flex items-center justify-between px-1">
           <span className="text-xs text-muted-foreground">外观</span>
@@ -614,7 +625,7 @@ function LibraryPage() {
 
 /* ============ 根 ============ */
 export default function App() {
-  const { init, pollJobs, error, page, loggedIn, theme, setTheme } = useStudio();
+  const { init, pollJobs, error, page, loggedIn, loginCmd, theme, setTheme } = useStudio();
   useEffect(() => {
     init();
     const t = setInterval(pollJobs, 3000);
@@ -637,7 +648,7 @@ export default function App() {
           {loggedIn === false && (
             <div className="flex items-center gap-2 border-b border-[var(--warning)]/30 bg-[var(--warning)]/10 px-6 py-2 text-sm">
               <AlertTriangle className="size-4 text-[var(--warning)]" />
-              Agent 还没登录，AI 推荐和制作暂时用不了。在终端运行 <code className="rounded bg-card px-1.5 font-mono text-xs">claude</code>，输入 <code className="rounded bg-card px-1.5 font-mono text-xs">/login</code>，完成后刷新本页。
+              Agent 还没登录，AI 推荐和制作暂时用不了。在终端运行 <code className="rounded bg-card px-1.5 font-mono text-xs">{loginCmd}</code>，完成后刷新本页；或者在左下角换一条线路。
             </div>
           )}
           <ScrollArea className="h-full">

@@ -48,6 +48,9 @@ const applyTheme = (t: Theme) => {
 const savedTheme = (() => { try { return (localStorage.getItem("kclip-theme") as Theme) || "light"; } catch { return "light" as Theme; } })();
 applyTheme(savedTheme);
 
+export type AuthMode = "relay" | "official";
+type Health = { loggedIn: boolean; mode: AuthMode; loginCmd: string };
+
 type State = {
   buzz: { zh: string; ko: string; why: string }[];
   trending: { tag: string; query: string; views: number; best: number; songs: string[] }[];
@@ -57,6 +60,9 @@ type State = {
   theme: Theme;
   setTheme: (t: Theme) => void;
   loggedIn: boolean | null;
+  authMode: AuthMode;
+  loginCmd: string;
+  setAuthMode: (m: AuthMode) => Promise<void>;
   query: string;
   searching: boolean;
   results: Video[];
@@ -97,6 +103,13 @@ export const useStudio = create<State>((set, get) => ({
   theme: savedTheme,
   setTheme: (theme) => { try { localStorage.setItem("kclip-theme", theme); } catch { /* 无痕模式 */ } applyTheme(theme); set({ theme }); },
   loggedIn: null,
+  authMode: "relay",
+  loginCmd: "claude /login",
+  setAuthMode: async (mode) => {
+    set({ authMode: mode, loggedIn: null });
+    const h = await api<Health>("/api/auth-mode", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode }) });
+    set({ loggedIn: h.loggedIn, authMode: h.mode, loginCmd: h.loginCmd });
+  },
   query: "",
   searching: false,
   results: [],
@@ -125,7 +138,7 @@ export const useStudio = create<State>((set, get) => ({
     try {
       set({ categories: await api("/api/categories") });
       get().pollJobs();
-      api<{ loggedIn: boolean }>("/api/health").then((h) => set({ loggedIn: h.loggedIn })).catch(() => {});
+      api<Health>("/api/health").then((h) => set({ loggedIn: h.loggedIn, authMode: h.mode, loginCmd: h.loginCmd })).catch(() => {});
       api<{ picks: Video[] }>("/api/picks").then((p) => p.picks?.length && set({ picks: p.picks })).catch(() => {});
       get().fetchCats();
     } catch (e) {
