@@ -370,6 +370,7 @@ function CategorySheet({ open, onOpenChange }: { open: boolean; onOpenChange: (o
                   <div className="min-w-0 flex-1">
                     <div className="font-medium">{c.label}</div>
                     <div className="truncate text-xs text-muted-foreground">{c.kind === "hot" ? "Melon 实时榜 + theqoo 热帖，自动更新" : c.sources.map((s) => s.replace(/^https?:\/\/(www\.)?youtube\.com\//, "").replace(/\/shorts$/, "").replace(/ shorts$/, "")).join("、")}</div>
+                    {c.kind !== "hot" && <div className="truncate text-xs text-primary/80">{c.scouting ? "正在找这类内容的频道…" : c.found?.length ? `自动找到的频道：${c.found.join("、")}` : "会自动去找做这类短视频的频道"}</div>}
                   </div>
                   <button type="button" aria-label={`删除栏目 ${c.label}`} onClick={() => removeCategory(c.id).catch(oops)} className="p-1 text-muted-foreground/60 hover:text-destructive"><Trash2 className="size-4" /></button>
                 </li>

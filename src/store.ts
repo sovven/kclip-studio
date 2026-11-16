@@ -35,7 +35,7 @@ export type Job = {
   checked?: boolean;
   outputs: { video?: string | null; cover?: string | null; caption?: string | null; summary?: { title?: string; summary?: string; uncertain?: string[] } | null; folder?: string };
 };
-export type Category = { id: string; label: string; kind?: string; custom?: boolean; sources: string[] };
+export type Category = { id: string; label: string; kind?: string; custom?: boolean; sources: string[]; found?: string[]; scouting?: boolean };
 
 const api = async <T,>(url: string, init?: RequestInit): Promise<T> => {
   const r = await fetch(url, init);
