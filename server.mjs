@@ -196,7 +196,7 @@ const shortSearch = (q, n) => ytList(shortUrl(q), n);
 async function scoutCat(cat) {
   const c = catOf(cat);
   const seeds = c?.q || [];
-  if (!c || c.kind === "hot" || !seeds.length || scouting.has(cat) || Date.now() < ytCooldownUntil) return;
+  if (!c || c.kind === "hot" || !seeds.length || scouting.has(cat) || Date.now() < ytCooldownUntil || !cfg.ytdlp) return;
   scouting.add(cat);
   try {
     const known = new Set((c.ch || []).map((u) => (u.match(/@[^/]+/) || [""])[0].toLowerCase()));
@@ -213,6 +213,7 @@ async function scoutCat(cat) {
     const all = [...tally.values()].sort((a, b) => b.hits - a.hits);
     const twice = all.filter((x) => x.hits >= 2);
     const cands = (twice.length >= 4 ? twice : all).slice(0, 14);
+    if (!cands.length) return; // 搜索没拿到东西（断网、被拦）：不记结果，下次再找
     const out = [];
     for (let i = 0; i < cands.length; i += 3) await Promise.all(cands.slice(i, i + 3).map(async (ch) => {
       const url = `https://www.youtube.com/${ch.handle}/shorts`;
@@ -255,6 +256,7 @@ function refreshCat(cat) {
 }
 async function discover(cat, { fresh = false } = {}) {
   if (!catOf(cat)) throw new Error("没有这个栏目");
+  needYtdlp();
   if (!scouted[cat] || Date.now() - scouted[cat].at > SCOUT_MS) queueScout(cat);
   const hit = cache.get(cat);
   if (hit && !fresh) {
