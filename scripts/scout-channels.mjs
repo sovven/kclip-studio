@@ -3,7 +3,7 @@
 // 用法：node scripts/scout-channels.mjs handle1 handle2 ...   → 输出排行；加 --json 输出 JSON
 import { execFile } from "node:child_process";
 
-const YTDLP = "D:/Tools/yt-dlp/yt-dlp.exe";
+const YTDLP = process.env.KCLIP_YTDLP || "yt-dlp"; // 在 PATH 里，或用环境变量指定
 const args = process.argv.slice(2);
 const asJson = args.includes("--json");
 const handles = args.filter((a) => a !== "--json");

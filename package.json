@@ -4,6 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "start": "vite build && node server.mjs",
+    "setup": "node scripts/setup.mjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",

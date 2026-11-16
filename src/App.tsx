@@ -5,7 +5,7 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-
 import { CSS } from "@dnd-kit/utilities";
 import {
   AlertTriangle, Check, Clapperboard, Compass, Copy, Download, Eye, FileArchive, Film, FolderOpen, GripVertical, LayoutTemplate, Library, Link2, Loader2,
-  Monitor, Moon, MoreHorizontal, Play, Plus, RotateCw, Search, Settings2, Sparkles, Sun, Trash2, X,
+  Monitor, Moon, MoreHorizontal, Play, Plus, RotateCw, Search, Settings2, Sparkles, Sun, Trash2, Wrench, X,
 } from "lucide-react";
 import { Dialog } from "radix-ui";
 import { toast } from "sonner";
@@ -23,7 +23,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { TemplatePage } from "@/template/TemplatePage";
-import { ALL, useStudio, type Engine, type CoverStyle, type Draft, type Job, type Page, type Theme, type Video } from "@/store";
+import { ALL, useStudio, type Engine, type SetupItem, type CoverStyle, type Draft, type Job, type Page, type Theme, type Video } from "@/store";
 
 const COVER: Record<CoverStyle, { label: string; hint: string }> = {
   band: { label: "黑底大标题", hint: "外研社同款，稳" },
@@ -203,8 +203,78 @@ function AgentCard() {
   );
 }
 
+/* ============ 环境检查 ============ */
+// 别人下载下来第一次打开时，告诉他缺什么、怎么装；路径也可以在这里手填
+function SetupRow({ it }: { it: SetupItem }) {
+  const { saveSetup } = useStudio();
+  const [path, setPath] = useState("");
+  const [saving, setSaving] = useState(false);
+  const copy = (t: string) => navigator.clipboard.writeText(t).then(() => toast.success("命令已复制", { description: "打开终端粘贴运行，装完回来点「重新检查」" })).catch(() => toast(t));
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    try { await saveSetup(it.edit!, path); setPath(""); toast.success("已保存"); }
+    catch (err) { toast.error((err as Error).message); }
+    finally { setSaving(false); }
+  };
+  return (
+    <li className="px-3.5 py-3 text-sm">
+      <div className="flex items-center gap-2">
+        {it.ok ? <Check className="size-4 shrink-0 text-[var(--success)]" /> : <AlertTriangle className="size-4 shrink-0 text-[var(--warning)]" />}
+        <span className="font-medium">{it.label}</span>
+        <span className="ml-auto shrink-0 text-xs text-muted-foreground">{it.need}</span>
+      </div>
+      {it.ok ? (
+        it.detail && <div className="mt-0.5 truncate pl-6 font-mono text-[11px] text-muted-foreground" title={it.detail}>{it.detail}</div>
+      ) : (
+        <div className="mt-1.5 space-y-2 pl-6">
+          {it.hint && <p className="text-xs leading-relaxed text-muted-foreground">{it.hint}</p>}
+          {it.cmd && (
+            <button type="button" onClick={() => copy(it.cmd!)} title="点击复制" className="flex w-full items-center gap-2 rounded-lg bg-secondary px-2.5 py-1.5 text-left font-mono text-xs hover:bg-accent">
+              <span className="min-w-0 flex-1 truncate">{it.cmd}</span><Copy className="size-3.5 shrink-0 text-muted-foreground" />
+            </button>
+          )}
+          {it.url && <a href={it.url} target="_blank" rel="noreferrer" className="inline-block text-xs text-primary underline underline-offset-2">打开下载页</a>}
+          {it.edit && (
+            <form onSubmit={save} className="flex gap-1.5">
+              <Input value={path} onChange={(e) => setPath(e.target.value)} placeholder="已经装了？把路径粘贴到这里" className="h-8 flex-1 font-mono text-xs" />
+              <Button type="submit" size="sm" variant="secondary" className="h-8" disabled={saving || !path.trim()}>保存</Button>
+            </form>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function SetupSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+  const { setup, loadSetup, recheck } = useStudio();
+  const [busy, setBusy] = useState(false);
+  const again = async () => { setBusy(true); await Promise.all([loadSetup(), recheck()]); setBusy(false); };
+  const lack = setup?.items.filter((i) => !i.ok) || [];
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full overflow-y-auto border-l-0 sm:max-w-[460px]">
+        <SheetHeader>
+          <SheetTitle>环境</SheetTitle>
+          <SheetDescription>{!setup ? "正在检查…" : lack.length ? `还差 ${lack.length} 项。只想逛「发现」的话，装好 yt-dlp 就够了；要出片再装其余的。` : "都装好了，所有功能可用。"}</SheetDescription>
+        </SheetHeader>
+        <div className="space-y-4 px-4 pb-6">
+          <ul className="divide-y divide-border rounded-2xl bg-card shadow-card">{setup?.items.map((it) => <SetupRow key={it.id} it={it} />)}</ul>
+          <Button variant="secondary" className="w-full rounded-full" disabled={busy} onClick={again}><RotateCw className={cn(busy && "animate-spin")} /> 重新检查</Button>
+          {setup && <p className="break-all text-xs leading-relaxed text-muted-foreground">作品、缓存和设置都存在这台电脑的 <span className="font-mono">{setup.dataDir}</span>，不会上传。</p>}
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
 function Sidebar() {
-  const { page, setPage, theme, setTheme, drafts, jobs } = useStudio();
+  const { page, setPage, theme, setTheme, drafts, jobs, setup } = useStudio();
+  const lack = setup?.items.filter((i) => !i.ok).length || 0;
+  const [setupOpen, setSetupOpen] = useState(false);
+  // 第一次打开且连找视频都做不了时，直接把环境面板弹出来
+  useEffect(() => { if (setup?.items.some((i) => i.id === "ytdlp" && !i.ok)) setSetupOpen(true); }, [setup?.platform]); // eslint-disable-line react-hooks/exhaustive-deps
   const active = jobs.filter((j) => j.status === "running" || j.status === "queued").length + drafts.length;
   const done = jobs.filter((j) => j.status === "done").length;
   const nav: { id: Page; label: string; icon: React.ReactNode; count?: number }[] = [
@@ -240,6 +310,11 @@ function Sidebar() {
       </nav>
       <div className="mt-auto space-y-3">
         <AgentCard />
+        <button onClick={() => setSetupOpen(true)} className="flex w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground">
+          <Wrench className="size-3.5" />环境
+          {setup && <span className={cn("ml-auto", lack ? "font-medium text-[var(--warning)]" : "")}>{lack ? `还差 ${lack} 项` : "已就绪"}</span>}
+        </button>
+        <SetupSheet open={setupOpen} onOpenChange={setSetupOpen} />
         <div className="flex items-center justify-between px-1">
           <span className="text-xs text-muted-foreground">外观</span>
           <Segmented<Theme>

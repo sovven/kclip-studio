@@ -66,6 +66,9 @@ export type NewApi = { engine: Engine; name: string; baseUrl: string; apiKey: st
 type Health = { loggedIn: boolean; engine: Engine; route: string; routes: Record<Engine, Route[]>; loginCmd: string };
 const pickHealth = (h: Health) => ({ loggedIn: h.loggedIn, engine: h.engine, route: h.route, routes: h.routes, loginCmd: h.loginCmd });
 
+export type SetupItem = { id: string; label: string; need: string; ok: boolean; detail?: string; edit?: string; cmd?: string; url?: string; hint?: string };
+export type Setup = { platform: string; dataDir: string; items: SetupItem[] };
+
 export const ALL = "all"; // 「推荐」页签：所有栏目混在一起
 
 type State = {
@@ -82,6 +85,9 @@ type State = {
   routes: Record<Engine, Route[]>;
   loginCmd: string;
   recheck: () => Promise<void>;
+  setup: Setup | null;
+  loadSetup: () => Promise<void>;
+  saveSetup: (key: string, value: string) => Promise<void>;
   setEngine: (e: Engine) => Promise<void>;
   setRoute: (r: string) => Promise<void>;
   addApi: (a: NewApi) => Promise<void>;
@@ -146,6 +152,9 @@ export const useStudio = create<State>((set, get) => ({
     set({ loggedIn: null });
     try { set(pickHealth(await api<Health>("/api/health?fresh=1"))); } catch (e) { fail(e); }
   },
+  setup: null,
+  loadSetup: async () => { try { set({ setup: await api<Setup>("/api/setup") }); } catch { /* 下次再查 */ } },
+  saveSetup: async (key, value) => set({ setup: await post<Setup>("/api/setup", { key, value }) }),
   setEngine: async (engine) => {
     set({ engine, loggedIn: null });
     set(pickHealth(await post<Health>("/api/auth-mode", { engine })));
@@ -286,6 +295,7 @@ export const useStudio = create<State>((set, get) => ({
       const categories = await api<Category[]>("/api/categories");
       set({ categories });
       get().pollJobs();
+      get().loadSetup();
       api<Health>("/api/health").then((h) => set(pickHealth(h))).catch(() => {});
       api<{ picks: Video[] }>("/api/picks").then((p) => p.picks?.length && set({ picks: p.picks })).catch(() => {});
       const tab = categories.some((c) => c.id === get().tab) ? get().tab : ALL;

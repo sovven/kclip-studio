@@ -6,16 +6,17 @@ import http from "node:http";
 import path from "node:path";
 import { createTplApi } from "./tpl.mjs";
 import { createPackApi } from "./pack.mjs";
+import { createConfig, toolLines } from "./config.mjs";
 
 const PORT = Number(process.env.PORT) || 5291;
 // 只监听本机：这个服务能让 Agent 在电脑上跑命令，不能暴露给局域网。确实要给别的设备用，自己设 HOST=0.0.0.0
 const HOST = process.env.HOST || "127.0.0.1";
 const ROOT = path.dirname(new URL(import.meta.url).pathname.replace(/^\/(\w:)/, "$1"));
 const JOBS = path.join(ROOT, "jobs");
-const YTDLP = "D:/Tools/yt-dlp/yt-dlp.exe";
-const SKILL = "D:/Agent/Claude/workpalce/work/xhs-bilingual-clip";
-const NODE_MODULES = "D:/Agent/Claude/workpalce/work/xhs-bilingual-clip/template/node_modules";
 mkdirSync(JOBS, { recursive: true });
+// 工具路径都从 config 取（自动检测 + 页面「环境」里可改），不写死哪台电脑的位置
+const cfg = createConfig({ ROOT, JOBS });
+const needYtdlp = () => { if (!cfg.ytdlp) throw new Error("没找到 yt-dlp：点左下角「环境」按提示安装"); return cfg.ytdlp; };
 
 // ---------- 栏目 → 搜索词 / 频道 ----------
 // 栏目是数据不是代码：默认 6 个内容栏目（按"这条视频是什么内容"分，不按来源分），用户可以在页面上增删，存在 jobs/categories.json。
@@ -65,7 +66,7 @@ const run = (cmd, args, opts = {}) =>
 const ytList = async (src, n) => {
   const url = src.startsWith("http") ? src : src.startsWith("date:") ? `https://www.youtube.com/results?search_query=${encodeURIComponent(src.slice(5))}&sp=CAISBBABGAE%3D` : `ytsearch${n}:${src}`;
   // 注意不要加 youtube:lang=ko：韩文界面的"조회수 1.7만회"yt-dlp 解析不了，播放量会变成 0
-  const out = await run(YTDLP, ["--flat-playlist", "-J", "--playlist-items", `1-${n}`, url]);
+  const out = await run(needYtdlp(), ["--flat-playlist", "-J", "--playlist-items", `1-${n}`, url]);
   const pl = JSON.parse(out);
   return (pl.entries || []).map((e) => ({
     id: e.id,
@@ -106,7 +107,7 @@ const fetchMeta = (v) =>
     ? Promise.resolve(meta.get(v.id))
     : Date.now() < ytCooldownUntil
     ? Promise.resolve(null)
-    : run(YTDLP, ["-J", "--skip-download", "--no-playlist", v.url], { timeout: 60000 })
+    : run(needYtdlp(), ["-J", "--skip-download", "--no-playlist", v.url], { timeout: 60000 })
         .then((out) => {
           const j = JSON.parse(out);
           const ac = Object.keys(j.automatic_captions || {});
@@ -295,7 +296,7 @@ async function buildCat(cat) {
 async function resolveLink(url) {
   if (!/^https?:\/\/\S+$/.test(url)) throw new Error("这不像一个视频链接");
   let j;
-  try { j = JSON.parse(await run(YTDLP, ["-J", "--skip-download", "--no-playlist", url], { timeout: 60000 })); }
+  try { j = JSON.parse(await run(needYtdlp(), ["-J", "--skip-download", "--no-playlist", url], { timeout: 60000 })); }
   catch (e) { throw new Error(/Unsupported URL/i.test(e.message) ? "这个网站的链接还不支持" : `读不到这个视频：${String(e.message).split("\n").find((l) => /ERROR/.test(l)) || "检查一下链接"}`.slice(0, 200)); }
   const yt = /youtube/i.test(j.extractor_key || "");
   return {
@@ -357,8 +358,8 @@ function trending(limit = 20) {
 const BASE_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(ANTHROPIC_|CLAUDE_CODE_|CLAUDECODE$|CLAUDE_AGENT_|CLAUDE_CONFIG_DIR$)/.test(k)));
 // 线路：relay = ~/.claude/settings.json 里配的中转站；official = 独立配置目录里登录的官方账号（不动 ~/.claude）；
 // default = ~/.codex/config.toml 的默认配置；其余是用户添加的 API（Key 只存在 jobs/auth.json，不返回给前端）
-const OFFICIAL_DIR = "D:/Tools/claude-official";
-const CLAUDE_API_DIR = "D:/Tools/claude-api"; // 空配置目录，避免 ~/.claude/settings.json 的中转站变量盖掉自定义 API
+const OFFICIAL_DIR = cfg.claudeOfficialDir;
+const CLAUDE_API_DIR = cfg.claudeApiDir; // 空配置目录，避免 ~/.claude/settings.json 的中转站变量盖掉自定义 API
 const AUTH_FILE = path.join(JOBS, "auth.json");
 const BUILTIN_ROUTES = {
   claude: [{ id: "relay", label: "中转站" }, { id: "official", label: "官方账号" }],
@@ -422,7 +423,7 @@ const runClaude = (prompt, { cwd = ROOT, onLine, model, web, effort, onSpawn } =
     if (onLine || web) args.push("--verbose"); // stream-json 必须带 verbose；json 模式带了会变成消息数组
     if (web) args.push("--tools", "WebSearch,WebFetch", "--allowedTools", "WebSearch", "WebFetch");
     else if (!onLine) args.push("--tools", '""'); // 选题、出词这类纯文字任务不给工具，否则它会去翻项目文件，又慢又答非所问
-    if (onLine) args.push("--allowedTools", "Bash", "PowerShell", "Read", "Write", "Edit", "Glob", "Grep", "Skill", "--add-dir", SKILL, NODE_MODULES);
+    if (onLine) args.push("--allowedTools", "Bash", "PowerShell", "Read", "Write", "Edit", "Glob", "Grep", "Skill", "--add-dir", cfg.skill, cfg.skillModules);
     const p = spawn("claude", args, { cwd, shell: true, windowsHide: true, env: claudeEnv() });
     onSpawn?.(p);
     p.stdin.end(prompt); // 提示词走 stdin，避免 Windows 命令行转义问题
@@ -450,7 +451,7 @@ const runCodex = (prompt, { cwd = ROOT, onLine, web, onSpawn } = {}) =>
     const args = ["exec", "--json", "--skip-git-repo-check"];
     if (custom) args.push("-c", "model_provider=kclip", "-c", "model_providers.kclip.name=kclip", "-c", `model_providers.kclip.base_url=${custom.baseUrl}`, "-c", "model_providers.kclip.env_key=KCLIP_API_KEY", "-c", "model_providers.kclip.wire_api=responses");
     if (custom?.model) args.push("-m", custom.model);
-    if (onLine) args.push("-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true", "--add-dir", SKILL, "--add-dir", NODE_MODULES);
+    if (onLine) args.push("-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true", "--add-dir", cfg.skill, "--add-dir", cfg.skillModules);
     else args.push("-s", "read-only", "--ephemeral", "-c", "model_reasoning_effort=low");
     if (web) args.push("-c", "web_search=live");
     args.push("-"); // 提示词走 stdin
@@ -544,11 +545,15 @@ function deleteJob(id) {
 }
 
 function jobPrompt(j) {
+  const SKILL = cfg.skill, NODE_MODULES = cfg.skillModules;
+  const link = process.platform === "win32" ? "用 junction 指向（PowerShell New-Item -ItemType Junction）" : "用符号链接指向（ln -s）";
   return `用 xhs-bilingual-clip skill（在 ${SKILL}，先读 SKILL.md）把这个视频做成小红书双语字幕视频：${j.url}
-- 当前目录就是项目目录：把 ${SKILL}/template 的内容复制到这里，node_modules 用 junction 指向 ${NODE_MODULES}（PowerShell New-Item -ItemType Junction），字体从 C:\\Windows\\Fonts 复制 NotoSansSC-VF.ttf / NotoSansKR-VF.ttf 到 public/fonts。
+- 这台电脑的工具位置（SKILL.md 里写的路径只是示例，以这里为准，不要去找别的位置，也不要自己下载安装）：
+  ${toolLines(cfg)}
+- 当前目录就是项目目录：把 ${SKILL}/template 的内容复制到这里（不要复制 node_modules），node_modules ${link} ${NODE_MODULES}，字体从上面的字体文件夹复制 NotoSansSC-VF.ttf / NotoSansKR-VF.ttf 到 public/fonts。
 - 视频标题参考：${j.title}${j.note ? `；用户备注：${j.note}` : ""}
 - 封面样式：${j.coverStyle}（config.ts 的 COVER_STYLE：band 黑底大标题 / poster 大字报 / card 韩中对照卡 / reels Reels 款）；配色 PALETTE = "${/^[a-z]+$/.test(j.accent || "") ? j.accent : "yellow"}"（config.ts，字幕/标题/单词卡/封面都跟着变）。版式要守小红书安全区：顶部 150px、底部 y>1480、右侧 140px 不放字；一句字幕最多 2 行原文 + 1 行中文，超了就拆。封面底图挑人物清楚、没有烧录大字幕的一帧。
-- 全自动，不要提问；听不清的句子删掉并记录。python 不可用，用 node。
+- 全自动，不要提问；听不清的句子删掉并记录。写脚本一律用 node，不要用 python。
 - 最后必须产出：out/成片.mp4、out/封面_3比4.png、out/小红书文案.txt、out/剪映素材/（npm run pack），以及 out/summary.json：{"title":"中文标题","summary":"内容一句话","uncertain":["删掉或不确定的句子"],"cues":字幕条数}`;
 }
 
@@ -677,7 +682,7 @@ const serveFile = (res, file, req) => {
   createReadStream(file).pipe(res);
 };
 
-const tplApi = createTplApi({ JOBS, agent, jobs, saveJobs, send, body, serveFile });
+const tplApi = createTplApi({ JOBS, agent, jobs, saveJobs, send, body, serveFile, cfg });
 const packApi = createPackApi({ jobs, outputsOf, send, body });
 
 http
@@ -693,6 +698,8 @@ http
       if (u.pathname === "/api/categories/delete" && req.method === "POST") { removeCategory((await body(req)).id); return send(res, 200, { categories: publicCats() }); }
       if (u.pathname === "/api/categories/reset" && req.method === "POST") { categories = structuredClone(DEFAULT_CATEGORIES); saveCats(); return send(res, 200, { categories: publicCats() }); }
       if (u.pathname === "/api/scout" && req.method === "POST") { const { id } = await body(req); if (scouted[id]) scouted[id].at = 0; queueScout(id); return send(res, 200, { categories: publicCats() }); }
+      if (u.pathname === "/api/setup" && req.method === "GET") return send(res, 200, { platform: cfg.platform, dataDir: JOBS, items: cfg.checks() });
+      if (u.pathname === "/api/setup" && req.method === "POST") { const { key, value } = await body(req); cfg.set(key, value); health.at = 0; return send(res, 200, { platform: cfg.platform, dataDir: JOBS, items: cfg.checks() }); }
       if (u.pathname === "/api/resolve") return send(res, 200, await resolveLink(u.searchParams.get("url") || ""));
       if (u.pathname === "/api/jobs/cancel" && req.method === "POST") { cancelJob((await body(req)).id); return send(res, 200, { ok: true }); }
       if (u.pathname === "/api/jobs/delete" && req.method === "POST") { deleteJob((await body(req)).id); return send(res, 200, { ok: true }); }
@@ -719,6 +726,8 @@ http
       if (u.pathname === "/api/recommend") return send(res, 200, await withRealThumbs(await recommend((u.searchParams.get("cats") || "").split(",").filter(catOf).length ? u.searchParams.get("cats").split(",").filter(catOf) : categories.map((c) => c.id))));
       if (u.pathname === "/api/jobs" && req.method === "GET") return send(res, 200, jobs.map((j) => ({ ...j, outputs: outputsOf(j) })));
       if (u.pathname === "/api/jobs" && req.method === "POST") {
+        const missing = cfg.checks().filter((c) => /制作/.test(c.need) && c.id !== "ai" && !c.ok).map((c) => c.label);
+        if (missing.length) throw new Error(`还不能制作，缺：${missing.join("、")}。点左下角「环境」按提示装好`);
         const items = (await body(req)).items || [];
         for (const it of items) {
           const id = `${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "")}-${String(it.id).replace(/[^\w-]/g, "").slice(0, 40)}`;
@@ -738,6 +747,7 @@ http
       }
       // 前端（build 后）
       const dist = path.join(ROOT, "dist");
+      if (!existsSync(path.join(dist, "index.html"))) { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); return res.end("<meta charset=utf-8><body style='font:16px system-ui;padding:40px'>页面还没构建。在工作台文件夹里运行 <code>npm start</code>（会自动构建再启动）。"); }
       const f = path.join(dist, u.pathname === "/" ? "index.html" : u.pathname);
       return serveFile(res, existsSync(f) ? f : path.join(dist, "index.html"), req);
     } catch (e) {
@@ -745,6 +755,8 @@ http
     }
   })
   .listen(PORT, HOST, () => {
-    console.log(`KCLIP Studio API → http://localhost:${PORT}`);
+    console.log(`KCLIP Studio → http://localhost:${PORT}`);
+    const lack = cfg.checks().filter((c) => !c.ok);
+    if (lack.length) console.log(`环境还缺 ${lack.length} 项（${lack.map((c) => c.label).join("、")}），打开页面左下角「环境」看怎么装`);
     pump(); // 上次服务器关闭时还在排队的任务，接着做
   });

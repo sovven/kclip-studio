@@ -25,6 +25,8 @@ dist-ssr
 
 # KCLIP
 jobs/
+vendor/
+models/
 dist/
 node_modules/
 .claude/

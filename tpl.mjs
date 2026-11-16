@@ -53,7 +53,7 @@ function buildTimeline({ title, question, footnote, items, questionVoice, tick }
   return { tracks, clips, duration: t };
 }
 
-export function createTplApi({ JOBS, agent, jobs, saveJobs, send, body, serveFile }) {
+export function createTplApi({ JOBS, agent, jobs, saveJobs, send, body, serveFile, cfg }) {
   const DIR = path.join(JOBS, "_tpl");
   const PROJECTS = path.join(DIR, "projects");
   const ASSETS = path.join(DIR, "assets");
@@ -174,7 +174,7 @@ export function createTplApi({ JOBS, agent, jobs, saveJobs, send, body, serveFil
 
   // ---------- 选词 ----------
   // 用户系列用过的词（素材文件名）和这里做过的词，不再推荐
-  const SERIES_DIR = "D:/Work/vedio/这是什么";
+  const SERIES_DIR = cfg.seriesDir; // 可选：以前做过的系列素材文件夹，在 jobs/config.json 里填 seriesDir
   function usedWords() {
     const used = new Set();
     const walk = (dir, depth) => {
@@ -473,7 +473,7 @@ ${lines.map((l, i) => `${i + 1}. ${l}`).join("\n")}
     if (seg[0] === "font") {
       const f = { kr: "NotoSansKR-VF.ttf", sc: "NotoSansSC-VF.ttf" }[seg[1]];
       if (!f) { send(res, 404, { error: "no font" }); return true; }
-      serveFile(res, `C:/Windows/Fonts/${f}`, req);
+      serveFile(res, path.join(cfg.fonts || "", f), req); // 没装字体时 404，页面退回系统字体
       return true;
     }
     if (seg[0] === "suggest" && M === "POST") {
