@@ -1,7 +1,7 @@
 // KCLIP Studio 后端：发现韩国短视频 → AI 推荐 → 排队制作（调用本机 Claude Code 或 Codex + xhs-bilingual-clip skill）
 // 运行：node server.mjs   （端口 5291；前端 dev 在 5290，build 后由本服务直接托管 dist/）
 import { spawn, execFile } from "node:child_process";
-import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, appendFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, appendFileSync, copyFileSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { createTplApi } from "./tpl.mjs";
@@ -559,6 +559,59 @@ function jobPrompt(j) {
 - 最后必须产出：out/成片.mp4、out/封面_3比4.png、out/小红书文案.txt、out/剪映素材/（npm run pack），以及 out/summary.json：{"title":"中文标题","summary":"内容一句话","uncertain":["删掉或不确定的句子"],"cues":字幕条数}`;
 }
 
+// 成片出来后按意见局部返工：先按关键词判断改哪一块（不调 AI），只给 AI 那几个文件和那一条命令
+const REVISE_SCOPES = {
+  caption: { re: /文案|小红书标题|话题|标签|hashtag|#|简介|正文/i, files: "out/小红书文案.txt（必要时 out/summary.json 的 title）", run: "" },
+  cover: { re: /封面|首图|缩略图/, files: "src/Cover.tsx、src/config.ts 里 COVER_ 开头的常量", run: "npx remotion still src/index.ts Cover out/封面_3比4.png --log=error" },
+  subs: { re: /字幕|翻译|错字|意思|台词|这句|听错|听写|对不上|不同步|太快|太慢|漏了|这一句|那句|第\s*\d+\s*句/, files: "src/cues.ts（只改需要改的那几条）", run: "video" },
+  style: { re: /颜色|配色|字体|字号|大小|位置|太大|太小|单词卡|标题|排版|粗|细|边距|安全区|黑底/, files: "src/config.ts（TITLE、PALETTE、SUB_MODE 等）；只有常量改不到时才动 src/Video.tsx / src/TitleLines.tsx", run: "video" },
+  cut: { re: /剪掉|删掉|开头|结尾|片段|时长|太长|太短|多余|截到|从.*秒/, files: "src/config.ts 的时间常量（TOTAL 等）和 src/cues.ts 的时间", run: "video" },
+};
+const reviseScopes = (text) => Object.keys(REVISE_SCOPES).filter((k) => REVISE_SCOPES[k].re.test(text));
+
+function revisePrompt(j) {
+  const { text, scopes } = j.revision;
+  const list = scopes.length ? scopes : [];
+  const files = list.map((k) => `- ${REVISE_SCOPES[k].files}`).join("\n");
+  const video = list.some((k) => REVISE_SCOPES[k].run === "video");
+  const cmds = [];
+  if (video) cmds.push("npx remotion render src/index.ts Kim out/成片.mp4 --codec=h264 --crf=16 --audio-codec=aac --audio-bitrate=256k --log=error", "npm run pack");
+  if (video || list.includes("cover")) cmds.push(REVISE_SCOPES.cover.run);
+  return `这是一个已经做好的小红书双语字幕视频工程（当前目录）。用户看了成片，提出修改意见：
+「${text}」
+
+只做局部修改，省 token：
+- 不要读 SKILL.md，不要重新下载视频、不要重新转写/听写、不要重建工程或复制模板，已有的素材和文件全部沿用。
+- ${list.length ? `只看、只改这些文件：\n${files}` : "先判断意见对应哪个文件，只读那个文件里相关的部分，改完即止。"}
+- 用 Grep 定位要改的地方，不要整个读大文件；不要动和这条意见无关的内容。
+- ${cmds.length ? `改完按顺序只跑这些命令：\n${cmds.map((c) => `  ${c}`).join("\n")}` : list.length ? "不需要重新渲染视频，改完文件就结束。" : "如果改了 src/ 下影响画面的文件，跑 npx remotion render src/index.ts Kim out/成片.mp4 --codec=h264 --crf=16 --audio-codec=aac --audio-bitrate=256k --log=error；改了封面就跑 " + REVISE_SCOPES.cover.run + "；只改文案就不渲染。"}
+- 全自动，不要提问；写脚本用 node，不要用 python。
+- 最后一句话用中文说明你改了什么（一句即可）。`;
+}
+
+function snapshotOutputs(j) {
+  const out = path.join(j.dir, "out");
+  const n = (j.revisions?.length || 0) + 1;
+  const dest = path.join(j.dir, "revisions", String(n));
+  mkdirSync(dest, { recursive: true });
+  for (const f of ["成片.mp4", "封面_3比4.png", "小红书文案.txt", "summary.json"]) if (existsSync(path.join(out, f))) copyFileSync(path.join(out, f), path.join(dest, f));
+  return dest;
+}
+
+function reviseJob({ id, text, scopes }) {
+  const j = jobs.find((x) => x.id === id);
+  if (!j || j.status !== "done") throw new Error("只有做好的成片才能修改");
+  if (j.id.startsWith("tpl-")) throw new Error("模板作品请在模板编辑器里改");
+  const t = String(text || "").trim().slice(0, 1000);
+  if (!t) throw new Error("写一下要改什么");
+  const valid = (Array.isArray(scopes) ? scopes : reviseScopes(t)).filter((k) => REVISE_SCOPES[k]);
+  const backup = snapshotOutputs(j);
+  j.revision = { text: t, scopes: valid, backup, at: Date.now() };
+  Object.assign(j, { status: "queued", steps: 0, stage: -1, last: "排队修改中", error: undefined });
+  saveJobs();
+  pump();
+}
+
 async function pump() {
   if (busy) return;
   const j = jobs.find((x) => x.status === "queued");
@@ -575,8 +628,11 @@ async function pump() {
       const st = [[/yt-dlp/, 0], [/whisper/, 1], [/cues.ts|config.ts/, 2], [/remotion render/, 3], [/Cover|封面/, 4], [/文案|summary.json/, 5]].find(([re]) => re.test(cmd));
       if (st && st[1] > (j.stage ?? -1)) j.stage = st[1];
     };
-    await agent(jobPrompt(j), {
+    const rev = j.revision;
+    const light = rev && rev.scopes.length && rev.scopes.every((k) => k === "caption" || k === "cover");
+    await agent(rev ? revisePrompt(j) : jobPrompt(j), {
       cwd: j.dir,
+      ...(rev ? { model: rev.scopes.length === 1 && rev.scopes[0] === "caption" ? "sonnet" : undefined, effort: light ? "low" : "medium" } : {}),
       onSpawn: (proc) => { current = { id: j.id, proc }; },
       onLine: (line) => {
         appendFileSync(log, line + "\n");
@@ -602,6 +658,17 @@ async function pump() {
     j.error = String(e.message).slice(0, 300);
   }
   if (j.cancelled) { j.status = "failed"; j.error = "已取消"; delete j.cancelled; }
+  if (j.revision) {
+    // 修改失败也不能把作品弄没：旧成片还在就回到作品库，错误记在这次修改里
+    const r = j.revision;
+    const ok = j.status === "done";
+    const out = path.join(j.dir, "out");
+    if (!ok) for (const f of ["成片.mp4", "封面_3比4.png", "小红书文案.txt", "summary.json"]) if (existsSync(path.join(r.backup, f))) try { copyFileSync(path.join(r.backup, f), path.join(out, f)); } catch {}
+    (j.revisions ||= []).push({ text: r.text, scopes: r.scopes, at: r.at, ok, note: ok ? j.last : j.error, backup: r.backup });
+    if (existsSync(path.join(out, "成片.mp4"))) { j.status = "done"; j.error = undefined; }
+    j.checked = false;
+    delete j.revision;
+  }
   current = null;
   j.finishedAt = Date.now();
   saveJobs();
@@ -714,6 +781,7 @@ http
         execFile(cmd, args, () => {}); // explorer 正常打开也会返回非 0，不看结果
         return send(res, 200, { ok: true, folder: out });
       }
+      if (u.pathname === "/api/revise-scopes") return send(res, 200, reviseScopes(u.searchParams.get("text") || ""));
       if (u.pathname === "/api/health") return send(res, 200, await getHealth(u.searchParams.has("fresh")));
       if (u.pathname === "/api/auth-mode" && req.method === "POST") { setRoute(await body(req)); return send(res, 200, await getHealth()); }
       if (u.pathname === "/api/apis" && req.method === "POST") { addApi(await body(req)); return send(res, 200, await getHealth()); }
@@ -721,6 +789,7 @@ http
       if (u.pathname === "/api/search") return send(res, 200, await withRealThumbs(await search(u.searchParams.get("q") || "")));
       if (u.pathname === "/api/picks") { try { const saved = JSON.parse(readFileSync(path.join(JOBS, "picks.json"), "utf8")); return send(res, 200, { ...saved, picks: await withRealThumbs(saved.picks) }); } catch { return send(res, 200, { picks: [] }); } }
       if (u.pathname === "/api/retry" && req.method === "POST") { const { id } = await body(req); const j = jobs.find((x) => x.id === id); if (j && j.status === "failed") { Object.assign(j, { status: "queued", error: undefined, steps: 0, stage: -1, last: "排队中" }); saveJobs(); pump(); } return send(res, 200, { ok: true }); }
+      if (u.pathname === "/api/revise" && req.method === "POST") { reviseJob(await body(req)); return send(res, 200, { ok: true }); }
       if (u.pathname === "/api/checked" && req.method === "POST") { const { id } = await body(req); const j = jobs.find((x) => x.id === id); if (j) { j.checked = true; saveJobs(); } return send(res, 200, { ok: true }); }
       if (u.pathname === "/api/buzz") return send(res, 200, (await buzz()).topics);
       if (u.pathname === "/api/trending") return send(res, 200, (await melonHot()).slice(0, 16).map((a) => ({ tag: a.name, query: a.query, views: a.score, best: a.best, songs: a.songs })));

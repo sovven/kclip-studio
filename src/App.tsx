@@ -5,7 +5,7 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-
 import { CSS } from "@dnd-kit/utilities";
 import {
   AlertTriangle, Check, Clapperboard, Compass, Copy, Download, Eye, FileArchive, Film, FolderOpen, GripVertical, LayoutTemplate, Library, Link2, Loader2,
-  Monitor, Moon, MoreHorizontal, Play, Plus, RotateCw, Search, Settings2, Sparkles, Sun, Trash2, Wrench, X,
+  Monitor, Moon, MoreHorizontal, PenLine, Play, Plus, RotateCw, Search, Settings2, Sparkles, Sun, Trash2, Wrench, X,
 } from "lucide-react";
 import { Dialog } from "radix-ui";
 import { toast } from "sonner";
@@ -887,6 +887,59 @@ const copyCaption = (text: string) => { copyText(text).then(() => toast.success(
 const jobTitle = (j: Job) => j.outputs?.summary?.title || j.title;
 const jobDate = (j: Job) => (j.finishedAt ? new Date(j.finishedAt).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
 
+// 修改意见：按内容只返工对应那一块，不整条重做
+const REVISE_LABEL: Record<string, string> = { subs: "字幕", style: "样式", cut: "剪辑", cover: "封面", caption: "文案" };
+const REVISE_COST: Record<string, string> = { caption: "只改文案，不渲染", cover: "只重出封面", subs: "改字幕后重渲染", style: "改样式后重渲染", cut: "改时长后重渲染" };
+function ReviseBox({ j, onSent }: { j: Job; onSent: () => void }) {
+  const { pollJobs } = useStudio();
+  const [text, setText] = useState("");
+  const [auto, setAuto] = useState<string[]>([]);
+  const [picked, setPicked] = useState<string[] | null>(null);
+  const [sending, setSending] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => { fetch(`/api/revise-scopes?text=${encodeURIComponent(text)}`).then((r) => r.json()).then(setAuto).catch(() => {}); }, 250);
+    return () => clearTimeout(t);
+  }, [text]);
+  const scopes = picked ?? auto;
+  const toggle = (k: string) => setPicked((p) => { const cur = p ?? auto; return cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k]; });
+  const send = async () => {
+    setSending(true);
+    try {
+      const r = await fetch("/api/revise", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: j.id, text, scopes }) });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error);
+      toast.success("已排队修改，在「制作」页看进度");
+      await pollJobs();
+      onSent();
+    } catch (e) { toast.error((e as Error).message); }
+    setSending(false);
+  };
+  const history = j.revisions || [];
+  return (
+    <div className="rounded-2xl border border-border/70 p-3">
+      <div className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold"><PenLine className="size-3.5" /> 修改意见</div>
+      <Textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="比如：第 3 句中文翻错了，应该是“我们连生日都不过”；封面字再大一点" className="min-h-16 rounded-xl text-[13px]" onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && text.trim()) send(); }} />
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <span className="text-[11px] text-muted-foreground">只改：</span>
+        {Object.keys(REVISE_LABEL).map((k) => (
+          <button key={k} onClick={() => toggle(k)} title={REVISE_COST[k]} className={cn("rounded-full px-2 py-0.5 text-[11px]", scopes.includes(k) ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground")}>{REVISE_LABEL[k]}</button>
+        ))}
+        <Button size="xs" className="ml-auto rounded-full" disabled={!text.trim() || sending} onClick={send}>{sending ? <Loader2 className="animate-spin" /> : <RotateCw />} 按意见重做</Button>
+      </div>
+      <div className="mt-1.5 text-[11px] text-muted-foreground">
+        {text.trim() ? (scopes.length ? scopes.map((k) => REVISE_COST[k]).join(" · ") : "没认出改哪块，AI 会先找对应文件再改（稍贵）") : "不会重新下载和听写，只动相关文件；改之前自动备份旧版"}
+      </div>
+      {history.length > 0 && (
+        <ul className="mt-2 space-y-1 border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
+          {history.slice(-3).reverse().map((h, i) => (
+            <li key={i} className="flex gap-1.5"><span className={h.ok ? "text-emerald-600" : "text-destructive"}>{h.ok ? "✓" : "✕"}</span><span className="line-clamp-2">{h.text}{h.note ? ` → ${h.note}` : ""}</span></li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 // 在页面里直接看成片、对文案，不用跳新标签页
 function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
   const { deleteJob } = useStudio();
@@ -900,7 +953,7 @@ function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
           <div className="grid shrink-0 place-items-center bg-black">
             {o.video ? <video src={o.video} poster={o.cover || undefined} controls autoPlay className="aspect-[9/16] h-[min(92vh,720px)]" /> : <div className="grid aspect-[9/16] h-[min(92vh,720px)] place-items-center text-white/50"><Film /></div>}
           </div>
-          <div className="flex min-w-0 flex-1 flex-col gap-4 p-6">
+          <div className="flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto p-6">
             <div className="flex items-start gap-3">
               <div className="min-w-0 flex-1">
                 <Dialog.Title className="text-lg font-semibold leading-snug tracking-tight">{jobTitle(j)}</Dialog.Title>
@@ -914,10 +967,11 @@ function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
                 <ul className="list-disc space-y-0.5 pl-4 text-muted-foreground">{uncertain.map((u, i) => <li key={i}>{u}</li>)}</ul>
               </div>
             )}
-            <div className="flex min-h-0 flex-1 flex-col">
+            <div className="flex shrink-0 flex-col">
               <div className="mb-1.5 flex items-center text-sm font-semibold">小红书文案{o.caption && <Button size="xs" variant="secondary" className="ml-auto rounded-full" onClick={() => copyCaption(o.caption!)}><Copy /> 复制</Button>}</div>
-              <pre className="min-h-24 flex-1 overflow-y-auto whitespace-pre-wrap rounded-2xl bg-secondary/60 p-3 font-sans text-[13px] leading-relaxed">{o.caption || "这条没有文案"}</pre>
+              <pre className="max-h-56 min-h-24 overflow-y-auto whitespace-pre-wrap rounded-2xl bg-secondary/60 p-3 font-sans text-[13px] leading-relaxed">{o.caption || "这条没有文案"}</pre>
             </div>
+            {!j.id.startsWith("tpl-") && <ReviseBox j={j} onSent={onClose} />}
             <div className="flex flex-wrap items-center gap-2">
               {o.video && <Button className="rounded-full" asChild><a href={`/api/pack?id=${encodeURIComponent(j.id)}`} download><Download /> 下载 zip</a></Button>}
               {o.video && <Button variant="secondary" className="rounded-full" onClick={() => copyZip(j.id)}><FileArchive /> 复制 zip</Button>}
