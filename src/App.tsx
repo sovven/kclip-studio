@@ -338,26 +338,11 @@ function LessonsSheet({ open, onOpenChange, data, setData }: { open: boolean; on
   );
 }
 
-// 后台每 20 秒看一眼经验本；学到新规则时右下角轻提示，可以当场撤销
-function useLessons(notify = false) {
+// 后台每 20 秒看一眼经验本（学到什么在「制作」页「最近学到」里看，不弹窗打扰）
+function useLessons() {
   const [data, setData] = useState<{ rules: Lesson[]; log: LessonLog[] }>({ rules: [], log: [] });
-  const seen = useRef<number | null>(null);
   useEffect(() => {
-    const tick = () => fetch("/api/lessons").then((r) => r.json()).then((d) => {
-      setData(d);
-      const newest = d.log[0]?.at || 0;
-      if (notify && seen.current !== null) {
-        for (const l of d.log.filter((x: LessonLog) => x.at > seen.current! && (x.action === "add" || x.action === "merge")).reverse()) {
-          const r = d.rules.find((x: Lesson) => x.rule === l.rule);
-          toast(l.action === "add" ? "学到一条新经验" : "经验更新了", {
-            description: l.rule,
-            duration: 8000,
-            action: r && l.action === "add" ? { label: "撤销", onClick: () => post("/api/lessons", { action: "delete", id: r.id }).then((x) => setData(x as typeof d)).catch(() => {}) } : undefined,
-          });
-        }
-      }
-      seen.current = Math.max(seen.current || 0, newest);
-    }).catch(() => {});
+    const tick = () => fetch("/api/lessons").then((r) => r.json()).then(setData).catch(() => {});
     tick();
     const t = setInterval(tick, 20000);
     return () => clearInterval(t);
@@ -370,7 +355,7 @@ function Sidebar() {
   const lack = setup?.items.filter((i) => !i.ok).length || 0;
   const [setupOpen, setSetupOpen] = useState(false);
   const [lessonsOpen, setLessonsOpen] = useState(false);
-  const [lessonData, setLessonData] = useLessons(true);
+  const [lessonData, setLessonData] = useLessons();
   useEffect(() => { const o = () => setLessonsOpen(true); window.addEventListener("open-lessons", o); return () => window.removeEventListener("open-lessons", o); }, []);
   // 第一次打开且连找视频都做不了时，直接把环境面板弹出来
   useEffect(() => { if (setup?.items.some((i) => i.id === "ytdlp" && !i.ok)) setSetupOpen(true); }, [setup?.platform]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -960,6 +945,7 @@ function Studio() {
               </div>
             </div>
           )}
+          <LearnedList />
         </section>
       </div>
     </div>
@@ -1261,41 +1247,36 @@ function WorkCard({ j, onOpen }: { j: Job; onOpen: () => void }) {
   );
 }
 
-// 作品库顶部的"成长记录"：平时一行，点开像更新日志一样按日期列出学到了什么
-function GrowthCard() {
+// 「制作」页「刚做好」下面的"最近学到"：和刚做好一样的列表，默认露 3 条，展开就在页面里往下展开全部
+function LearnedList() {
   const [data] = useLessons();
   const [open, setOpen] = useState(false);
   // 只列现在有效的规则（删掉的、被覆盖的不显示），最近学到或更新的在前
   const learned = [...data.rules].sort((a, b) => b.at - a.at);
   if (!learned.length) return null;
+  const shown = open ? learned : learned.slice(0, 3);
   const day = (t: number) => new Date(t).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
-  const groups = learned.reduce<Record<string, Lesson[]>>((g, l) => { (g[day(l.at)] ||= []).push(l); return g; }, {});
   return (
-    <div className="mb-6 rounded-2xl border border-border/70 bg-card text-[13px]">
-      <button className="flex w-full items-center gap-2 px-4 py-2.5 text-left" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        <Sparkles className="size-3.5 shrink-0 text-primary" />
-        <span className="shrink-0 font-medium">最近学到</span>
-        <span className="min-w-0 flex-1 truncate text-muted-foreground">{learned[0].rule}</span>
-        <span className="shrink-0 text-xs text-muted-foreground">共 {data.rules.length} 条 · {open ? "收起" : "展开"}</span>
-      </button>
-      {open && (
-        <div className="border-t border-border/70 px-4 pb-3 pt-2">
-          {Object.entries(groups).map(([d, list]) => (
-            <div key={d} className="mt-2">
-              <div className="mb-1 text-[11px] font-medium text-muted-foreground">{d}</div>
-              <ul className="space-y-1.5">
-                {list.map((l, i) => (
-                  <li key={i} className="flex gap-2">
-                    <span className={cn("mt-0.5 h-fit shrink-0 rounded px-1 text-[10px]", l.hits > 1 ? "bg-secondary text-muted-foreground" : "bg-primary/10 text-primary")}>{l.hits > 1 ? `${l.hits} 次` : "新"}</span>
-                    <div className="min-w-0">{l.pinned && <span className="mr-1 text-primary">●</span>}{l.rule}</div>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-          <button className="mt-3 text-xs text-muted-foreground hover:text-foreground" onClick={() => window.dispatchEvent(new Event("open-lessons"))}>管理经验 →</button>
-        </div>
-      )}
+    <div className="mt-6">
+      <div className="mb-2 flex items-center gap-1.5 text-sm font-semibold">
+        <Sparkles className="size-3.5 text-primary" />最近学到
+        <span className="text-xs font-normal text-muted-foreground">你纠正过的，以后自动遵守</span>
+        <button onClick={() => window.dispatchEvent(new Event("open-lessons"))} className="ml-auto text-xs font-normal text-muted-foreground hover:text-foreground">管理</button>
+      </div>
+      <div className="divide-y divide-border rounded-2xl bg-card shadow-card">
+        {shown.map((l) => (
+          <div key={l.id} className="flex items-start gap-3 px-4 py-2.5 text-[13px]">
+            <span className={cn("mt-0.5 shrink-0 rounded px-1.5 text-[10px] leading-4", l.hits > 1 ? "bg-secondary text-muted-foreground" : "bg-primary/10 text-primary")}>{l.hits > 1 ? `${l.hits} 次` : "新"}</span>
+            <span className="min-w-0 flex-1 leading-relaxed">{l.pinned && <span className="mr-1 text-primary">●</span>}{l.rule}</span>
+            <span className="shrink-0 text-[11px] text-muted-foreground">{day(l.at)}</span>
+          </div>
+        ))}
+        {learned.length > 3 && (
+          <button onClick={() => setOpen((v) => !v)} aria-expanded={open} className="flex w-full items-center justify-center gap-1 py-2 text-xs text-muted-foreground hover:text-foreground">
+            {open ? "收起" : `展开全部 ${learned.length} 条`}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -1318,7 +1299,6 @@ function LibraryPage() {
         <PageTitle title="作品库" sub={`${done.length} 条成片 · 点封面播放和对文案`} />
         {done.some(isTpl) && done.some((j) => !isTpl(j)) && <div className="mb-8 ml-auto"><Segmented value={kind} onChange={setKind} options={[{ v: "all", label: "全部" }, { v: "clip", label: "双语字幕" }, { v: "tpl", label: "快问快答" }]} /></div>}
       </div>
-      <GrowthCard />
       {shown.length ? (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-x-5 gap-y-8">{shown.map((j) => <WorkCard key={j.id} j={j} onOpen={() => open(j)} />)}</div>
       ) : (

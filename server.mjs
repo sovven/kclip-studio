@@ -1,7 +1,7 @@
 // KCLIP Studio 后端：发现韩国短视频 → AI 推荐 → 排队制作（调用本机 Claude Code 或 Codex + xhs-bilingual-clip skill）
 // 运行：node server.mjs   （端口 5291；前端 dev 在 5290，build 后由本服务直接托管 dist/）
 import { spawn, execFile } from "node:child_process";
-import { createReadStream, rmSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, appendFileSync, copyFileSync } from "node:fs";
+import { createReadStream, readdirSync, rmSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, appendFileSync, copyFileSync } from "node:fs";
 import http from "node:http";
 import { pipeline } from "node:stream";
 import { randomUUID } from "node:crypto";
@@ -699,6 +699,14 @@ function applyLesson(r, { job, kind, text }) {
   saveLessons();
 }
 
+// 交付前自检：用户不想替 AI 发现排版问题。出片和改画面/封面时都要亲眼看图，看到难看就自己改，不问
+const SELF_CHECK = `
+- 交付前自检（必须做，不要问用户）：把封面 out/封面_3比4.png 和成片里有标题、字幕、单词卡的几帧（npx remotion still … --frame=N 出到 work/）都用看图工具亲眼看一遍，检查：
+  · 标题/字幕/封面字有没有一两个字或一个标点单独掉到下一行（孤字、孤标点）、两行长短悬殊 → 调断行或字号让行长均衡，标题结尾的问号感叹号能去就去；
+  · 字有没有超出小红书安全区（顶部 150px、底部 y>1480、右侧 140px）、有没有被裁切、互相压住、压住人脸；
+  · 封面和字幕的韩文、中文是否对得上，有没有乱码或错字。
+  看到任何难看或出错的地方直接改，改完重新出图再看一遍，直到没问题；这一步只看你自己改出来的东西，用户之后不应该再指出这类问题。`;
+
 function jobPrompt(j) {
   const SKILL = cfg.skill, NODE_MODULES = cfg.skillModules;
   const link = process.platform === "win32" ? "用 junction 指向（PowerShell New-Item -ItemType Junction）" : "用符号链接指向（ln -s）";
@@ -709,7 +717,7 @@ function jobPrompt(j) {
 - 视频标题参考：${j.title}${j.note ? `；用户备注：${j.note}` : ""}
 - 封面样式：${j.coverStyle}（config.ts 的 COVER_STYLE：band 黑底大标题 / poster 大字报 / card 韩中对照卡 / reels Reels 款）；配色 PALETTE = "${/^[a-z]+$/.test(j.accent || "") ? j.accent : "yellow"}"（config.ts，字幕/标题/单词卡/封面都跟着变）。版式要守小红书安全区：顶部 150px、底部 y>1480、右侧 140px 不放字；一句字幕最多 2 行原文 + 1 行中文，超了就拆。封面底图挑人物清楚、没有烧录大字幕的一帧。
 - 全自动，不要提问；听不清的句子删掉并记录。写脚本一律用 node，不要用 python。
-${lessonsNote()}
+${SELF_CHECK}${lessonsNote()}
 - 最后必须产出：out/成片.mp4、out/封面_3比4.png、out/小红书文案.txt、out/剪映素材/（npm run pack），以及 out/summary.json：{"title":"中文标题","summary":"内容一句话","uncertain":["删掉或不确定的句子"],"cues":字幕条数}`;
 }
 
@@ -740,7 +748,8 @@ function revisePrompt(j) {
 - 用 Grep 定位要改的地方，不要整个读大文件；不要动和这条意见无关的内容。
 - ${cmds.length ? `改完按顺序只跑这些命令：\n${cmds.map((c) => `  ${c}`).join("\n")}` : list.length ? "不需要重新渲染视频，改完文件就结束。" : "如果改了 src/ 下影响画面的文件，跑 npx remotion render src/index.ts Kim out/成片.mp4 --codec=h264 --crf=16 --audio-codec=aac --audio-bitrate=256k --log=error；改了封面就跑 " + REVISE_SCOPES.cover.run + "；只改文案就不渲染。"}
 - 渲染成片如果报 EPERM / 文件被占用（用户可能正开着播放），不要反复重试，改为渲染到 out/成片_new.mp4 就结束，工作台会在文件释放后替换。
-- 全自动，不要提问；写脚本用 node，不要用 python。${lessonsNote()}
+- 全自动，不要提问；写脚本用 node，不要用 python。${list.some((k) => k !== "caption") || !list.length ? SELF_CHECK : ""}${lessonsNote()}
+- 改了封面就必须重新生成 out/封面_3比4.png，改了画面就必须重新渲染 out/成片.mp4；说"已重新生成"之前先确认文件时间确实是刚才的。
 - 最后一句话用中文说明你改了什么（一句即可）；如果有没做成的部分，必须明确说出来。`;
 }
 
@@ -783,7 +792,7 @@ async function reviseJob({ id, text, scopes, big }) {
   const { scopes: valid, by } = big ? { scopes: picked, by: "chat" } : await resolveScopes(t, picked);
   if (j.status !== "done") throw new Error("这条已经在改了");
   const backup = snapshotOutputs(j);
-  j.revision = { text: t, scopes: valid, by, big: !!big, backup, at: Date.now() };
+  j.revision = { text: t, scopes: valid, by, big: !!big, backup, at: Date.now(), cfg0: readSafe(path.join(j.dir, "src", "config.ts"), 200000) };
   Object.assign(j, { status: "queued", steps: 0, stage: -1, last: "排队修改中", error: undefined });
   saveJobs();
   pump();
@@ -924,15 +933,26 @@ async function pump() {
         try { renameSync(fresh, path.join(out, "成片.mp4")); break; } catch { await new Promise((s) => setTimeout(s, 2000)); }
       }
     }
-    // 核对该更新的文件真的更新了，不能只看成片在不在（旧成片一直都在）
-    const touched = (f) => { try { return statSync(path.join(out, f)).mtimeMs > r.at; } catch { return false; } };
-    const need = [];
-    if (r.scopes.some((k) => REVISE_SCOPES[k]?.run === "video")) need.push(["成片.mp4", "成片没有重新渲染"]);
-    if (r.scopes.includes("cover")) need.push(["封面_3比4.png", "封面没有重新生成"]);
-    if (r.scopes.includes("caption")) need.push(["小红书文案.txt", "文案没有改动"]);
-    const missed = j.status === "done" ? need.filter(([f]) => !touched(f)).map(([, why]) => why) : [];
-    if (!need.length && j.status === "done" && !["成片.mp4", "封面_3比4.png", "小红书文案.txt", "summary.json"].some(touched)) missed.push("没有任何文件被修改");
-    if (existsSync(fresh) && missed.includes("成片没有重新渲染")) missed.splice(missed.indexOf("成片没有重新渲染"), 1, "新成片已渲染好，但旧成片被占用替换不了（关掉播放器后点重试）");
+    // 核对：按实际改了什么来判断，不按预判的范围（范围可能多判，比如"安全区"被归到样式，其实只改封面）。
+    // 改了影响画面的源文件、成片却没重新渲染 → 没改成；封面同理；什么都没改 → 没改成
+    const mtime = (f) => { try { return statSync(path.join(j.dir, f)).mtimeMs; } catch { return 0; } };
+    const touched = (f) => mtime(path.join("out", f)) > r.at;
+    const srcDir = path.join(j.dir, "src");
+    let srcFiles = [];
+    try { srcFiles = readdirSync(srcDir).filter((f) => /\.(tsx?|json)$/.test(f)); } catch {}
+    const changedSrc = srcFiles.filter((f) => mtime(path.join("src", f)) > r.at);
+    const cfgNow = readSafe(path.join(srcDir, "config.ts"), 200000);
+    const nonCover = (s) => String(s || "").split("\n").filter((l) => !/COVER_/.test(l)).join("\n");
+    const onlyCover = (s) => String(s || "").split("\n").filter((l) => /COVER_/.test(l)).join("\n");
+    const videoSrcChanged = changedSrc.some((f) => f !== "Cover.tsx" && f !== "config.ts") || (changedSrc.includes("config.ts") && nonCover(cfgNow) !== nonCover(r.cfg0));
+    const coverSrcChanged = changedSrc.includes("Cover.tsx") || (changedSrc.includes("config.ts") && onlyCover(cfgNow) !== onlyCover(r.cfg0));
+    const missed = [];
+    if (j.status === "done") {
+      if (videoSrcChanged && !touched("成片.mp4")) missed.push("改了画面但成片没有重新渲染");
+      if (coverSrcChanged && !touched("封面_3比4.png")) missed.push("改了封面但封面没有重新生成");
+      if (!changedSrc.length && !["成片.mp4", "封面_3比4.png", "小红书文案.txt", "summary.json"].some(touched)) missed.push("没有任何文件被修改");
+    }
+    if (existsSync(fresh) && missed.includes("改了画面但成片没有重新渲染")) missed.splice(missed.indexOf("改了画面但成片没有重新渲染"), 1, "新成片已渲染好，但旧成片被占用替换不了（关掉播放器后点重试）");
     if (missed.length) { j.status = "failed"; j.error = `${missed.join("；")}。AI 说：${String(j.last || "").slice(0, 160)}`; }
     const ok = j.status === "done";
     if (!ok) for (const f of ["成片.mp4", "封面_3比4.png", "小红书文案.txt", "summary.json"]) if (existsSync(path.join(r.backup, f))) try { copyFileSync(path.join(r.backup, f), path.join(out, f)); } catch {}
