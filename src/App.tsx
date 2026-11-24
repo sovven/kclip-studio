@@ -981,7 +981,7 @@ const jobDate = (j: Job) => (j.finishedAt ? new Date(j.finishedAt).toLocaleDateS
 const REVISE_LABEL: Record<string, string> = { subs: "字幕", style: "样式", cut: "剪辑", cover: "封面", caption: "文案" };
 const REVISE_COST: Record<string, string> = { caption: "只改文案，不渲染", cover: "只重出封面", subs: "改字幕后重渲染", style: "改样式后重渲染", cut: "改时长后重渲染" };
 function ReviseBox({ j, onSent }: { j: Job; onSent: () => void }) {
-  const { pollJobs } = useStudio();
+  const { pollJobs, dockChat, setDockChat } = useStudio();
   const [text, setText] = useState("");
   const [auto, setAuto] = useState<string[]>([]);
   const [picked, setPicked] = useState<string[] | null>(null);
@@ -1007,7 +1007,12 @@ function ReviseBox({ j, onSent }: { j: Job; onSent: () => void }) {
   const history = j.revisions || [];
   return (
     <div className="rounded-2xl border border-border/70 p-3">
-      <div className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold"><PenLine className="size-3.5" /> 修改意见</div>
+      <div className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold">
+        <PenLine className="size-3.5" /> 修改意见
+        <button onClick={() => setDockChat(dockChat === j.id ? null : j.id)} className={cn("ml-auto flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-colors", dockChat === j.id ? "bg-[#0a84ff] text-white" : "bg-[#0a84ff]/10 text-[#0a84ff] hover:bg-[#0a84ff]/15")}>
+          <Send className="size-3" />AI 对话修改{j.chatBusy && <span className="size-1.5 animate-pulse rounded-full bg-current" />}
+        </button>
+      </div>
       <Textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="比如：第 3 句中文翻错了，应该是“我们连生日都不过”；封面字再大一点" className="min-h-16 rounded-xl text-[13px]" onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && text.trim()) send(); }} />
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         <span className="text-[11px] text-muted-foreground" title="AI 以你写的文字为准，勾选只作参考">参考：</span>
@@ -1017,7 +1022,7 @@ function ReviseBox({ j, onSent }: { j: Job; onSent: () => void }) {
         <Button size="xs" className="ml-auto rounded-full" disabled={!text.trim() || sending} onClick={send}>{sending ? <Loader2 className="animate-spin" /> : <RotateCw />} 按意见重做</Button>
       </div>
       <div className="mt-1.5 text-[11px] text-muted-foreground">
-        {text.trim() ? `${scopes.length ? scopes.map((k) => REVISE_COST[k]).join(" · ") : "没认出改哪块，AI 会先判断再改"} · 以你写的文字为准` : "小问题写这里；大改点上面「对话」先和 AI 商量。不会重新下载和听写，改前自动备份"}
+        {text.trim() ? `${scopes.length ? scopes.map((k) => REVISE_COST[k]).join(" · ") : "没认出改哪块，AI 会先判断再改"} · 以你写的文字为准` : "小问题写这里；大改点右上角「AI 对话修改」先和 AI 商量。不会重新下载和听写，改前自动备份"}
       </div>
       {history.length > 0 && (
         <ul className="mt-2 space-y-1 border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
@@ -1219,7 +1224,7 @@ function ChatPanel({ id, onStarted }: { id: string; onStarted?: () => void }) {
 
 // 在页面里直接看成片、对文案，不用跳新标签页
 function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
-  const { deleteJob, dockChat, setDockChat, setViewing } = useStudio();
+  const { deleteJob, dockChat, setViewing } = useStudio();
   const canChat = !j.id.startsWith("tpl-");
   const chatOpen = canChat && dockChat === j.id;
   useEffect(() => { setViewing(j.id); return () => setViewing(null); }, [j.id, setViewing]);
@@ -1248,16 +1253,6 @@ function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
               </div>
             )}
             <CaptionEditor j={j} caption={o.caption || ""} />
-            {canChat && (
-              <button onClick={() => setDockChat(chatOpen ? null : j.id)} className="flex items-center gap-2.5 rounded-2xl border border-[#0a84ff]/25 bg-[#0a84ff]/[0.06] px-3.5 py-2.5 text-left transition-colors hover:bg-[#0a84ff]/10">
-                <span className="grid size-7 shrink-0 place-items-center rounded-full bg-[#0a84ff] text-white"><Send className="size-3.5" /></span>
-                <span className="min-w-0 flex-1 leading-tight">
-                  <span className="block text-sm font-semibold">AI 对话修改</span>
-                  <span className="block truncate text-[11px] text-muted-foreground">{j.chatBusy ? "AI 正在回复…" : j.chat?.length ? (j.chat.at(-1)!.text.replace(/\s+/g, " ").slice(0, 40)) : "像聊天一样说想怎么改，它先说打算，你同意才动手"}</span>
-                </span>
-                <span className="text-xs text-muted-foreground">{chatOpen ? "收起 ›" : "展开 ›"}</span>
-              </button>
-            )}
             {canChat && <ReviseBox j={j} onSent={onClose} />}
             <div className="flex flex-wrap items-center gap-2">
               {o.video && <Button className="rounded-full" asChild><a href={`/api/pack?id=${encodeURIComponent(j.id)}`} download><Download /> 下载 zip</a></Button>}
