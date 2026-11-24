@@ -1158,7 +1158,7 @@ function ChatPanel({ id, onStarted }: { id: string; onStarted?: () => void }) {
   const time = (t: number) => new Date(t).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
   const Avatar = () => <div className="grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-b from-[#3a3a3c] to-black text-[11px] font-bold text-white dark:from-white dark:to-[#d1d1d6] dark:text-black">K</div>;
   return (
-    <div className="flex h-full w-[360px] shrink-0 flex-col border-l border-border/70 bg-background">
+    <div className="flex min-h-0 w-[360px] shrink-0 flex-col self-stretch border-l border-border/70 bg-card">
       {/* 顶栏：像手机聊天的联系人栏 */}
       <div className="flex items-center gap-2.5 border-b border-[#0a84ff]/15 bg-[#0a84ff]/[0.06] px-4 py-3">
         <Avatar />
@@ -1171,7 +1171,7 @@ function ChatPanel({ id, onStarted }: { id: string; onStarted?: () => void }) {
         <button aria-label="关闭对话" title="关闭" className="grid size-7 place-items-center rounded-full text-muted-foreground hover:bg-secondary" onClick={() => setDockChat(null)}><X className="size-3.5" /></button>
       </div>
       {/* 消息区 */}
-      <div className="flex-1 space-y-2.5 overflow-y-auto px-3 py-4 text-[14px] leading-relaxed">
+      <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-4 text-[14px] leading-relaxed">
         {!msgs.length && (
           <div className="flex items-end gap-2">
             <Avatar />
@@ -1210,8 +1210,15 @@ function ChatPanel({ id, onStarted }: { id: string; onStarted?: () => void }) {
         )}
         <div ref={end} />
       </div>
-      {/* 底部：同意按钮 + 圆角输入条 */}
+      {/* 底部：同意按钮 + 圆角输入条；还没开聊时给几个常用说法，点一下填进输入框 */}
       <div className="border-t border-border/70 p-3">
+        {!msgs.length && !text && (
+          <div className="mb-2.5 flex flex-wrap gap-1.5">
+            {["标题换个更抓人的", "封面排版更好看一点", "字幕太密，删掉一些", "文案短一点、更有网感"].map((q) => (
+              <button key={q} onClick={() => setText(q)} className="rounded-full border border-[#0a84ff]/25 px-2.5 py-1 text-xs text-[#0a84ff] transition-colors hover:bg-[#0a84ff]/10">{q}</button>
+            ))}
+          </div>
+        )}
         {canGo && <Button className="mb-2 w-full rounded-full" onClick={approve} disabled={!!busy}>{busy === "go" ? <Loader2 className="animate-spin" /> : <Check />} 同意，开始改</Button>}
         <div className="flex items-end gap-2 rounded-[22px] border border-border bg-card py-1 pl-4 pr-1">
           <textarea rows={1} value={text} onChange={(e) => setText(e.target.value)} placeholder={canGo ? "不对的话接着说…" : "发消息…"} className="max-h-28 min-h-8 flex-1 resize-none bg-transparent py-1.5 text-[14px] outline-none [field-sizing:content] placeholder:text-muted-foreground" onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); say(); } }} />
@@ -1282,7 +1289,7 @@ function ChatDock() {
       </button>
     );
   }
-  return <aside className="h-screen shrink-0 border-l border-border/70 shadow-[-8px_0_24px_-16px_rgba(0,0,0,0.25)]"><ChatPanel id={dockChat} /></aside>;
+  return <aside className="flex h-screen shrink-0 border-l border-border/70 shadow-[-8px_0_24px_-16px_rgba(0,0,0,0.25)]"><ChatPanel id={dockChat} /></aside>;
 }
 
 function WorkCard({ j, onOpen }: { j: Job; onOpen: () => void }) {
