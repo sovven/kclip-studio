@@ -5,7 +5,7 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-
 import { CSS } from "@dnd-kit/utilities";
 import {
   AlertTriangle, Check, Clapperboard, Compass, Copy, Download, Eye, FileArchive, Film, FolderOpen, GripVertical, LayoutTemplate, Library, Link2, Loader2, LogIn,
-  Monitor, Moon, MoreHorizontal, PenLine, Send, Play, Plus, RotateCw, Search, Settings2, Sparkles, Sun, Trash2, Wrench, X,
+  Minus, Monitor, Moon, MoreHorizontal, PenLine, Send, Play, Plus, RotateCw, Search, Settings2, Sparkles, Sun, Trash2, Wrench, X,
 } from "lucide-react";
 import { Dialog } from "radix-ui";
 import { toast } from "sonner";
@@ -1118,14 +1118,20 @@ function CaptionEditor({ j, caption }: { j: Job; caption: string }) {
   );
 }
 
-// 大改的对话框：AI 只说理解和打算，不动文件；点「同意，开始改」才排队修改
-function ChatPanel({ j, onStarted }: { j: Job; onStarted: () => void }) {
-  const { pollJobs } = useStudio();
-  const [msgs, setMsgs] = useState<ChatMsg[]>(j.chat || []);
+// AI 对话修改：从右边展开的聊天面板。AI 只说理解和打算，不动文件；点「同意，开始改」才排队修改。
+// 消息以服务端为准（每 3 秒随作品列表同步）：关掉成片弹窗、切页面都不会断，AI 在后台想完照样显示
+function ChatPanel({ id, onStarted }: { id: string; onStarted?: () => void }) {
+  const { pollJobs, jobs, setDockChat, setDockMin } = useStudio();
+  const j = jobs.find((x) => x.id === id);
+  const [msgs, setMsgs] = useState<ChatMsg[]>(j?.chat || []);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState<"" | "talk" | "go">("");
+  const serverSig = `${j?.chat?.length || 0}:${j?.chat?.at(-1)?.at || 0}`;
+  useEffect(() => { if (!busy && j?.chat) setMsgs(j.chat); }, [serverSig]); // eslint-disable-line react-hooks/exhaustive-deps
   const end = useRef<HTMLDivElement>(null);
-  useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [msgs, busy]);
+  const thinking = busy === "talk" || (!busy && !!j?.chatBusy);
+  useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [msgs, thinking]);
+  if (!j) return null;
   const say = async () => {
     const t = text.trim();
     if (!t || busy) return;
@@ -1137,7 +1143,7 @@ function ChatPanel({ j, onStarted }: { j: Job; onStarted: () => void }) {
   };
   const approve = async () => {
     setBusy("go");
-    try { await post("/api/chat/approve", { id: j.id }); toast.success("已同意，开始修改，在「制作」页看进度"); await pollJobs(); onStarted(); }
+    try { await post("/api/chat/approve", { id: j.id }); await pollJobs(); onStarted?.(); }
     catch (e) { toast.error((e as Error).message); }
     setBusy("");
   };
@@ -1147,15 +1153,17 @@ function ChatPanel({ j, onStarted }: { j: Job; onStarted: () => void }) {
   const time = (t: number) => new Date(t).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
   const Avatar = () => <div className="grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-b from-[#3a3a3c] to-black text-[11px] font-bold text-white dark:from-white dark:to-[#d1d1d6] dark:text-black">K</div>;
   return (
-    <div className="flex h-[440px] shrink-0 flex-col overflow-hidden rounded-2xl border border-[#0a84ff]/25 bg-background shadow-[0_0_0_3px_rgba(10,132,255,0.05)]">
+    <div className="flex h-full w-[360px] shrink-0 flex-col border-l border-border/70 bg-background">
       {/* 顶栏：像手机聊天的联系人栏 */}
       <div className="flex items-center gap-2.5 border-b border-[#0a84ff]/15 bg-[#0a84ff]/[0.06] px-4 py-3">
         <Avatar />
         <div className="min-w-0 flex-1 leading-tight">
           <div className="text-sm font-semibold">AI 对话修改</div>
-          <div className="text-[11px] text-muted-foreground">{busy === "talk" ? "正在输入…" : busy === "go" ? "开始修改…" : "跟 AI 说想怎么改，它先讲打算，你同意才动手"}</div>
+          <div className="truncate text-[11px] text-muted-foreground">{thinking ? "正在输入…" : busy === "go" ? "开始修改…" : j.outputs?.summary?.title || j.title}</div>
         </div>
         {msgs.length > 0 && <button className="text-xs text-muted-foreground hover:text-foreground" onClick={clear} disabled={!!busy}>清空</button>}
+        <button aria-label="收起" title="收起到右下角" className="grid size-7 place-items-center rounded-full text-muted-foreground hover:bg-secondary" onClick={() => setDockMin(true)}><Minus className="size-3.5" /></button>
+        <button aria-label="关闭对话" title="关闭" className="grid size-7 place-items-center rounded-full text-muted-foreground hover:bg-secondary" onClick={() => setDockChat(null)}><X className="size-3.5" /></button>
       </div>
       {/* 消息区 */}
       <div className="flex-1 space-y-2.5 overflow-y-auto px-3 py-4 text-[14px] leading-relaxed">
@@ -1187,7 +1195,7 @@ function ChatPanel({ j, onStarted }: { j: Job; onStarted: () => void }) {
             </div>
           );
         })}
-        {busy === "talk" && (
+        {thinking && (
           <div className="flex items-end gap-2">
             <Avatar />
             <div className="flex gap-1 rounded-[18px] rounded-bl-[6px] bg-secondary px-3.5 py-3">
@@ -1211,15 +1219,17 @@ function ChatPanel({ j, onStarted }: { j: Job; onStarted: () => void }) {
 
 // 在页面里直接看成片、对文案，不用跳新标签页
 function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
-  const { deleteJob } = useStudio();
+  const { deleteJob, dockChat, setDockChat, setViewing } = useStudio();
   const canChat = !j.id.startsWith("tpl-");
+  const chatOpen = canChat && dockChat === j.id;
+  useEffect(() => { setViewing(j.id); return () => setViewing(null); }, [j.id, setViewing]);
   const o = j.outputs || {};
   const uncertain = o.summary?.uncertain || [];
   return (
     <Dialog.Root open onOpenChange={(open) => !open && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
-        <Dialog.Content aria-describedby={undefined} className="fixed left-1/2 top-1/2 z-50 flex max-h-[92vh] w-[min(940px,94vw)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-3xl bg-card shadow-2xl outline-none">
+        <Dialog.Content aria-describedby={undefined} className={cn("fixed left-1/2 top-1/2 z-50 flex max-h-[92vh] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-3xl bg-card shadow-2xl outline-none", chatOpen ? "w-[min(1240px,96vw)]" : "w-[min(880px,94vw)]")}>
           <div className="grid shrink-0 place-items-center bg-black">
             {o.video ? <video src={o.video} poster={o.cover || undefined} controls autoPlay className="aspect-[9/16] h-[min(92vh,720px)]" /> : <div className="grid aspect-[9/16] h-[min(92vh,720px)] place-items-center text-white/50"><Film /></div>}
           </div>
@@ -1238,7 +1248,16 @@ function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
               </div>
             )}
             <CaptionEditor j={j} caption={o.caption || ""} />
-            {canChat && <ChatPanel j={j} onStarted={onClose} />}
+            {canChat && (
+              <button onClick={() => setDockChat(chatOpen ? null : j.id)} className="flex items-center gap-2.5 rounded-2xl border border-[#0a84ff]/25 bg-[#0a84ff]/[0.06] px-3.5 py-2.5 text-left transition-colors hover:bg-[#0a84ff]/10">
+                <span className="grid size-7 shrink-0 place-items-center rounded-full bg-[#0a84ff] text-white"><Send className="size-3.5" /></span>
+                <span className="min-w-0 flex-1 leading-tight">
+                  <span className="block text-sm font-semibold">AI 对话修改</span>
+                  <span className="block truncate text-[11px] text-muted-foreground">{j.chatBusy ? "AI 正在回复…" : j.chat?.length ? (j.chat.at(-1)!.text.replace(/\s+/g, " ").slice(0, 40)) : "像聊天一样说想怎么改，它先说打算，你同意才动手"}</span>
+                </span>
+                <span className="text-xs text-muted-foreground">{chatOpen ? "收起 ›" : "展开 ›"}</span>
+              </button>
+            )}
             {canChat && <ReviseBox j={j} onSent={onClose} />}
             <div className="flex flex-wrap items-center gap-2">
               {o.video && <Button className="rounded-full" asChild><a href={`/api/pack?id=${encodeURIComponent(j.id)}`} download><Download /> 下载 zip</a></Button>}
@@ -1247,10 +1266,28 @@ function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
               <Button variant="ghost" className="ml-auto rounded-full text-muted-foreground hover:text-destructive" onClick={() => { if (window.confirm("从作品库删除这条？文件会移到 jobs/_trash，需要时还能找回。")) { onClose(); setTimeout(() => deleteJob(j.id), 300); } }}><Trash2 /> 删除</Button>
             </div>
           </div>
+          {chatOpen && <ChatPanel id={j.id} onStarted={onClose} />}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
   );
+}
+
+// 关掉成片弹窗后，对话停靠在页面右侧继续显示；收起成右下角小按钮，点 × 才关掉
+function ChatDock() {
+  const { dockChat, dockMin, setDockMin, viewing, jobs } = useStudio();
+  if (!dockChat || viewing === dockChat) return null;
+  const j = jobs.find((x) => x.id === dockChat);
+  if (!j) return null;
+  if (dockMin) {
+    return (
+      <button onClick={() => setDockMin(false)} className="fixed bottom-5 right-5 z-40 flex max-w-[280px] items-center gap-2 rounded-full border border-[#0a84ff]/25 bg-card py-2 pl-2 pr-4 text-left shadow-lg">
+        <span className="relative grid size-8 shrink-0 place-items-center rounded-full bg-[#0a84ff] text-white"><Send className="size-3.5" />{j.chatBusy && <span className="absolute -right-0.5 -top-0.5 size-2.5 animate-pulse rounded-full bg-[var(--warning)]" />}</span>
+        <span className="min-w-0 leading-tight"><span className="block text-sm font-semibold">AI 对话修改</span><span className="block truncate text-[11px] text-muted-foreground">{j.chatBusy ? "正在回复…" : j.outputs?.summary?.title || j.title}</span></span>
+      </button>
+    );
+  }
+  return <aside className="h-screen shrink-0 border-l border-border/70 shadow-[-8px_0_24px_-16px_rgba(0,0,0,0.25)]"><ChatPanel id={dockChat} /></aside>;
 }
 
 function WorkCard({ j, onOpen }: { j: Job; onOpen: () => void }) {
@@ -1379,6 +1416,7 @@ export default function App() {
             </AnimatePresence>
           </ScrollArea>
         </main>
+        <ChatDock />
       </div>
       <DetailSheet />
       <Toaster position="top-center" />

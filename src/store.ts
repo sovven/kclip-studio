@@ -38,6 +38,7 @@ export type Job = {
   revision?: { text: string; scopes: string[]; at: number };
   revisions?: { text: string; scopes: string[]; by?: string; big?: boolean; at: number; ok: boolean; note?: string }[];
   chat?: ChatMsg[];
+  chatBusy?: boolean;
   outputs: { video?: string | null; cover?: string | null; caption?: string | null; summary?: { title?: string; summary?: string; uncertain?: string[] } | null; folder?: string };
 };
 export type Category = { id: string; label: string; kind?: string; custom?: boolean; sources: string[]; found?: string[]; scouting?: boolean };
@@ -138,6 +139,12 @@ type State = {
   cancelJob: (id: string) => Promise<void>;
   deleteJob: (id: string) => Promise<void>;
   saveCaption: (id: string, text: string, source?: "ai") => Promise<boolean>;
+  dockChat: string | null; // 正在和 AI 对话修改的作品：成片弹窗开着时在弹窗右边展开，关掉弹窗后停靠在页面右侧
+  dockMin: boolean; // 收起成右下角小按钮
+  setDockMin: (v: boolean) => void;
+  viewing: string | null; // 当前打开成片弹窗的作品
+  setViewing: (id: string | null) => void;
+  setDockChat: (id: string | null) => void;
   checkCaption: (id: string, text: string) => Promise<CaptionCheck | null>;
   init: () => Promise<void>;
 };
@@ -296,6 +303,12 @@ export const useStudio = create<State>((set, get) => ({
     get().pollJobs();
   },
 
+  dockChat: null,
+  setDockChat: (id) => set({ dockChat: id, dockMin: false }),
+  dockMin: false,
+  setDockMin: (v) => set({ dockMin: v }),
+  viewing: null,
+  setViewing: (id) => set({ viewing: id }),
   jobs: [],
   pollJobs: async () => {
     try {

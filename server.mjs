@@ -834,9 +834,12 @@ ${history}
 3. 需求不清楚就只问一个最关键的问题，先不给方案。
 最后单独一行输出（用户看不到这一行）：
 PLAN_JSON {"ready":true或false,"plan":"交给执行者的完整修改方案，写清每处改成什么","scopes":["caption","cover","subs","style","cut" 里需要的几个]}`;
+  // 思考中的标记给页面看：关掉弹窗也不中断，回复照样写进对话，右侧停靠的对话框会显示出来
+  j.chatBusy = true;
   let o;
   try { o = JSON.parse(await agent(prompt, { model: "sonnet", effort: "low" })); }
-  catch (e) { chat.pop(); throw e; }
+  catch (e) { chat.pop(); j.chatBusy = false; throw e; }
+  j.chatBusy = false;
   if (o.is_error) { chat.pop(); throw new Error(o.result || "AI 调用失败"); }
   const raw = o.result || "";
   const at = raw.lastIndexOf("PLAN_JSON");
@@ -959,6 +962,8 @@ async function pump() {
     if (!ok) for (const f of ["成片.mp4", "封面_3比4.png", "小红书文案.txt", "summary.json"]) if (existsSync(path.join(r.backup, f))) try { copyFileSync(path.join(r.backup, f), path.join(out, f)); } catch {}
     (j.revisions ||= []).push({ text: r.text, scopes: r.scopes, by: r.by, big: r.big, at: r.at, ok, note: ok ? j.last : j.error, backup: r.backup });
     if (ok) learnFrom({ kind: r.big ? "chat" : "revise", text: r.text, job: j });
+    // 对话里同意的修改，结果也回到对话里
+    if (r.big) (j.chat ||= []).push({ role: "ai", text: ok ? `改好了。${String(j.last || "").slice(0, 300)}` : `没改成：${String(j.error || "").slice(0, 300)}`, at: Date.now() });
     if (existsSync(path.join(out, "成片.mp4"))) { j.status = "done"; j.error = undefined; }
     j.checked = false;
     delete j.revision;
@@ -974,7 +979,7 @@ async function pump() {
 
 const JOBS_FILE = path.join(JOBS, "jobs.json");
 const saveJobs = () => writeFileSync(JOBS_FILE, JSON.stringify(jobs, null, 2));
-if (existsSync(JOBS_FILE)) for (const j of JSON.parse(readFileSync(JOBS_FILE, "utf8"))) jobs.push(j.status === "running" ? { ...j, status: "failed", error: "服务重启中断" } : j);
+if (existsSync(JOBS_FILE)) for (const j of JSON.parse(readFileSync(JOBS_FILE, "utf8")).map((x) => ({ ...x, chatBusy: false }))) jobs.push(j.status === "running" ? { ...j, status: "failed", error: "服务重启中断" } : j);
 
 const outputsOf = (j) => {
   const out = path.join(j.dir, "out");
