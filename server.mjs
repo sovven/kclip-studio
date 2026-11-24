@@ -3,6 +3,7 @@
 import { spawn, execFile } from "node:child_process";
 import { createReadStream, rmSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, appendFileSync, copyFileSync } from "node:fs";
 import http from "node:http";
+import { pipeline } from "node:stream";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { createTplApi } from "./tpl.mjs";
@@ -575,6 +576,7 @@ async function recommend(cats) {
 // ---------- 制作队列 ----------
 const jobs = []; // {id, url, title, coverStyle, status, steps, last, dir, outputs, error}
 let busy = false;
+const captionEdits = {}; // 作品 id → 等待学习的手改文案
 let current = null; // { id, proc } 正在跑的那条，取消时连子进程树一起结束
 
 // Codex 在沙箱里只能改作品自己的文件夹，而且沙箱里 node 起不了子进程（ffmpeg、Remotion 的浏览器都 EPERM）。
@@ -639,6 +641,64 @@ function deleteJob(id) {
   saveJobs();
 }
 
+// ---------- 经验本：从用户每次纠正里学，自己判断值不值得记 ----------
+// 两条线路共用；每次做视频、改视频、对话、检查文案都带上。只记"做事的规则"，不改代码
+const LESSONS_FILE = path.join(JOBS, "lessons.json");
+const LESSON_MAX = 30;
+let lessons = { rules: [], log: [] }; // rules: {id, rule, why, hits, pinned, from[], at}；log: 最近的判断（记/合并/跳过 + 理由）
+try { lessons = { rules: [], log: [], ...JSON.parse(readFileSync(LESSONS_FILE, "utf8")) }; } catch {}
+const saveLessons = () => writeFileSync(LESSONS_FILE, JSON.stringify(lessons, null, 2));
+const rankedRules = () => [...lessons.rules].sort((a, b) => (b.pinned - a.pinned) || (b.hits - a.hits) || (b.at - a.at));
+const lessonsNote = () => {
+  const r = rankedRules();
+  return r.length ? `\n- 用户以前纠正过、要长期遵守的规则（经验本）：\n${r.map((x) => `  · ${x.rule}`).join("\n")}` : "";
+};
+let learning = Promise.resolve();
+// 每条反馈都排队判断一次（串行，避免两次同时改经验本）；失败只记日志，不影响制作
+function learnFrom(ev) {
+  learning = learning.then(() => judgeLesson(ev)).catch((e) => { lessons.log.unshift({ at: Date.now(), action: "error", why: String(e.message).slice(0, 120), src: ev.src }); lessons.log = lessons.log.slice(0, 40); saveLessons(); });
+}
+async function judgeLesson({ kind, text, before, after, job }) {
+  const list = lessons.rules.map((r) => `${r.id}: ${r.rule}（被提到 ${r.hits} 次）`).join("\n") || "（还没有）";
+  const what = kind === "caption-edit"
+    ? `用户亲手改了小红书文案。\n改前：\n${String(before).slice(0, 1500)}\n改后：\n${String(after).slice(0, 1500)}`
+    : `用户对成片提的修改意见${kind === "chat" ? "（对话里确认的方案，括号里是用户原话）" : ""}：\n「${String(text).slice(0, 1500)}」`;
+  const o = JSON.parse(await agent(`你在维护一个"韩语学习小红书短视频工作台"的经验本：把用户的纠正提炼成以后做视频要长期遵守的规则。现在判断这次反馈值不值得记。
+${what}
+
+判断标准：
+- 记（add）：以后别的视频也会遇到的问题或用户的稳定偏好（版式、措辞风格、出处写法、字幕翻译习惯、选什么做单词卡、封面要求等）。
+- 合并（merge）：和已有某条意思相同或相近 → 给出那条的 id，并写一条合并后更准确的规则。和已有某条矛盾（比如以前说写出处、现在说不写）→ 也用 merge 覆盖那条，以这次为准，不要两条并存。
+- 跳过（skip）：只针对这条视频具体内容的一次性修改（比如某句听错了、某个词翻错了），没有普遍性；或者太含糊、说不出可执行的规则。但如果它暴露的是一类反复会犯的错（比如"韩文和中文对不上"），就提炼成通用规则记下。
+规则要具体可执行，一句话，中文，≤40 字，不要写这条视频的具体内容。
+
+已有规则：
+${list}
+
+一条反馈里常常有好几点，逐点判断，每点一个对象（最多 3 个）。
+只输出 JSON 数组：[{"action":"add|merge|skip","id":"merge 时填已有规则 id","rule":"规则（skip 时留空）","why":"一句话说明为什么记/合并/跳过"}]`, { model: "sonnet", effort: "low" }));
+  if (o.is_error) throw new Error(o.result || "AI 调用失败");
+  const t = o.result || "";
+  const s = t.indexOf("["), e = t.lastIndexOf("]");
+  const arr = s >= 0 && e > s ? JSON.parse(t.slice(s, e + 1)) : [JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1))];
+  for (const r of arr.slice(0, 3)) applyLesson(r, { job, kind, text: text || after });
+  saveLessons();
+}
+function applyLesson(r, { job, kind, text }) {
+  const src = { job: job?.id, title: job?.title, kind, text: String(text || "").slice(0, 120) };
+  const rule = String(r.rule || "").trim().slice(0, 80);
+  const old = r.action === "merge" && lessons.rules.find((x) => x.id === r.id);
+  if (old && rule) { old.rule = rule; old.hits++; old.at = Date.now(); if (job && !old.from.includes(job.id)) old.from.push(job.id); }
+  else if ((r.action === "add" || r.action === "merge") && rule) {
+    lessons.rules.push({ id: `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, rule, why: String(r.why || ""), hits: 1, pinned: false, from: job ? [job.id] : [], at: Date.now() });
+    // 超过上限：去掉最不常用、没置顶的那条
+    while (lessons.rules.length > LESSON_MAX) { const drop = rankedRules().filter((x) => !x.pinned).at(-1); if (!drop) break; lessons.rules.splice(lessons.rules.indexOf(drop), 1); }
+  }
+  lessons.log.unshift({ at: Date.now(), action: old ? "merge" : rule && r.action !== "skip" ? "add" : "skip", rule: r.action === "skip" ? "" : rule, why: String(r.why || "").slice(0, 160), src });
+  lessons.log = lessons.log.slice(0, 40);
+  saveLessons();
+}
+
 function jobPrompt(j) {
   const SKILL = cfg.skill, NODE_MODULES = cfg.skillModules;
   const link = process.platform === "win32" ? "用 junction 指向（PowerShell New-Item -ItemType Junction）" : "用符号链接指向（ln -s）";
@@ -649,6 +709,7 @@ function jobPrompt(j) {
 - 视频标题参考：${j.title}${j.note ? `；用户备注：${j.note}` : ""}
 - 封面样式：${j.coverStyle}（config.ts 的 COVER_STYLE：band 黑底大标题 / poster 大字报 / card 韩中对照卡 / reels Reels 款）；配色 PALETTE = "${/^[a-z]+$/.test(j.accent || "") ? j.accent : "yellow"}"（config.ts，字幕/标题/单词卡/封面都跟着变）。版式要守小红书安全区：顶部 150px、底部 y>1480、右侧 140px 不放字；一句字幕最多 2 行原文 + 1 行中文，超了就拆。封面底图挑人物清楚、没有烧录大字幕的一帧。
 - 全自动，不要提问；听不清的句子删掉并记录。写脚本一律用 node，不要用 python。
+${lessonsNote()}
 - 最后必须产出：out/成片.mp4、out/封面_3比4.png、out/小红书文案.txt、out/剪映素材/（npm run pack），以及 out/summary.json：{"title":"中文标题","summary":"内容一句话","uncertain":["删掉或不确定的句子"],"cues":字幕条数}`;
 }
 
@@ -678,8 +739,9 @@ function revisePrompt(j) {
 - ${list.length ? `先看这些文件（这是按意见初步判断的范围）：\n${files}\n- 以意见文字为准：如果意见明显要改的是清单外的东西，就改那里，并照下面规则决定要不要重渲染。` : "先判断意见对应哪个文件，只读那个文件里相关的部分，改完即止。"}
 - 用 Grep 定位要改的地方，不要整个读大文件；不要动和这条意见无关的内容。
 - ${cmds.length ? `改完按顺序只跑这些命令：\n${cmds.map((c) => `  ${c}`).join("\n")}` : list.length ? "不需要重新渲染视频，改完文件就结束。" : "如果改了 src/ 下影响画面的文件，跑 npx remotion render src/index.ts Kim out/成片.mp4 --codec=h264 --crf=16 --audio-codec=aac --audio-bitrate=256k --log=error；改了封面就跑 " + REVISE_SCOPES.cover.run + "；只改文案就不渲染。"}
-- 全自动，不要提问；写脚本用 node，不要用 python。
-- 最后一句话用中文说明你改了什么（一句即可）。`;
+- 渲染成片如果报 EPERM / 文件被占用（用户可能正开着播放），不要反复重试，改为渲染到 out/成片_new.mp4 就结束，工作台会在文件释放后替换。
+- 全自动，不要提问；写脚本用 node，不要用 python。${lessonsNote()}
+- 最后一句话用中文说明你改了什么（一句即可）；如果有没做成的部分，必须明确说出来。`;
 }
 
 function snapshotOutputs(j) {
@@ -701,6 +763,7 @@ async function resolveScopes(text, picked = []) {
   try {
     const o = JSON.parse(await agent(`把这条短视频修改意见归类，判断要改哪几块。可选：caption=小红书文案/标题/话题，cover=封面，subs=字幕内容或翻译或时间，style=画面上字的颜色字体大小位置，cut=剪辑时长片段。
 用户界面上勾了：${picked.join(",") || "无"}；关键词粗判是：${kw.join(",") || "无"}。两者都可能错，只作参考，以意见文字的真实意思为准（比如「结尾补一句关注我」多半是文案，「这句翻译错了」是字幕）。
+注意「标题」：单说「标题」「上面的标题」「视频里的标题」指视频画面顶部的大标题 → style；「文案里的标题」「小红书标题」才是 caption；两种都提到就两个都选。意见里提到的每一处都要覆盖到，宁可多选一项，不要漏。
 意见：「${text}」
 只输出 JSON 数组，比如 ["subs"]；看不出来就输出 []。`, { model: "sonnet", effort: "low" }));
     const t = o.result || "";
@@ -749,6 +812,8 @@ src/config.ts（节选）：
 ${conf || "（没有）"}
 小红书文案（节选）：
 ${readSafe(path.join(out, "小红书文案.txt"), 1200) || "（没有）"}
+
+用户长期要求（经验本）：${lessonsNote() || "（还没有）"}
 
 对话记录：
 ${history}
@@ -851,10 +916,28 @@ async function pump() {
   if (j.revision) {
     // 修改失败也不能把作品弄没：旧成片还在就回到作品库，错误记在这次修改里
     const r = j.revision;
-    const ok = j.status === "done";
     const out = path.join(j.dir, "out");
+    // 成片被占用时渲染到了 成片_new.mp4：等文件释放（最多约 1 分钟）再替换
+    const fresh = path.join(out, "成片_new.mp4");
+    if (existsSync(fresh) && statSync(fresh).mtimeMs > r.at) {
+      for (let i = 0; i < 30; i++) {
+        try { renameSync(fresh, path.join(out, "成片.mp4")); break; } catch { await new Promise((s) => setTimeout(s, 2000)); }
+      }
+    }
+    // 核对该更新的文件真的更新了，不能只看成片在不在（旧成片一直都在）
+    const touched = (f) => { try { return statSync(path.join(out, f)).mtimeMs > r.at; } catch { return false; } };
+    const need = [];
+    if (r.scopes.some((k) => REVISE_SCOPES[k]?.run === "video")) need.push(["成片.mp4", "成片没有重新渲染"]);
+    if (r.scopes.includes("cover")) need.push(["封面_3比4.png", "封面没有重新生成"]);
+    if (r.scopes.includes("caption")) need.push(["小红书文案.txt", "文案没有改动"]);
+    const missed = j.status === "done" ? need.filter(([f]) => !touched(f)).map(([, why]) => why) : [];
+    if (!need.length && j.status === "done" && !["成片.mp4", "封面_3比4.png", "小红书文案.txt", "summary.json"].some(touched)) missed.push("没有任何文件被修改");
+    if (existsSync(fresh) && missed.includes("成片没有重新渲染")) missed.splice(missed.indexOf("成片没有重新渲染"), 1, "新成片已渲染好，但旧成片被占用替换不了（关掉播放器后点重试）");
+    if (missed.length) { j.status = "failed"; j.error = `${missed.join("；")}。AI 说：${String(j.last || "").slice(0, 160)}`; }
+    const ok = j.status === "done";
     if (!ok) for (const f of ["成片.mp4", "封面_3比4.png", "小红书文案.txt", "summary.json"]) if (existsSync(path.join(r.backup, f))) try { copyFileSync(path.join(r.backup, f), path.join(out, f)); } catch {}
     (j.revisions ||= []).push({ text: r.text, scopes: r.scopes, by: r.by, big: r.big, at: r.at, ok, note: ok ? j.last : j.error, backup: r.backup });
+    if (ok) learnFrom({ kind: r.big ? "chat" : "revise", text: r.text, job: j });
     if (existsSync(path.join(out, "成片.mp4"))) { j.status = "done"; j.error = undefined; }
     j.checked = false;
     delete j.revision;
@@ -937,10 +1020,10 @@ const serveFile = (res, file, req) => {
   if (range) {
     const start = Number(range[1] || 0), end = range[2] ? Number(range[2]) : size - 1;
     res.writeHead(206, { "cache-control": "no-cache", "content-type": type, "content-range": `bytes ${start}-${end}/${size}`, "accept-ranges": "bytes", "content-length": end - start + 1 });
-    return createReadStream(file, { start, end }).pipe(res);
+    return pipeline(createReadStream(file, { start, end }), res, () => {}); // 浏览器中途取消（拖进度、关弹窗）时也要关掉文件，否则句柄一直占着，下次渲染覆盖不了成片
   }
   res.writeHead(200, { "cache-control": "no-cache", "content-type": type, "content-length": size, "accept-ranges": "bytes" });
-  createReadStream(file).pipe(res);
+  pipeline(createReadStream(file), res, () => {});
 };
 
 const tplApi = createTplApi({ JOBS, agent, jobs, saveJobs, send, body, serveFile, cfg });
@@ -972,12 +1055,21 @@ http
         return res.end(text);
       }
       if (u.pathname === "/api/caption" && req.method === "POST") {
-        const { id, text } = await body(req);
+        const { id, text, source } = await body(req);
         const j = jobs.find((x) => x.id === id);
         if (!j?.dir || typeof text !== "string") throw new Error("找不到这条作品");
         const out = path.join(j.dir, "out");
         mkdirSync(out, { recursive: true });
-        writeFileSync(path.join(out, "小红书文案.txt"), text.replace(/\r\n/g, "\n"));
+        const file = path.join(out, "小红书文案.txt");
+        const before = readSafe(file, 20000);
+        const after = text.replace(/\r\n/g, "\n");
+        writeFileSync(file, after);
+        // 用户亲手改的文案才学（采纳 AI 检查的不算）；连续保存时等停手 60 秒再学一次，拿第一次改前和最后一次改后对比
+        if (source !== "ai" && before.trim() !== after.trim()) {
+          const p = (captionEdits[id] ||= { before });
+          clearTimeout(p.timer);
+          p.timer = setTimeout(() => { delete captionEdits[id]; if (p.before.trim() !== after.trim()) learnFrom({ kind: "caption-edit", before: p.before, after, job: j }); }, 60000);
+        }
         return send(res, 200, { ok: true });
       }
       if (u.pathname === "/api/caption-check" && req.method === "POST") {
@@ -991,7 +1083,7 @@ http
 2. 韩语拼写、띄어쓰기、语法错误；韩语单词的中文释义或例句翻译不准确
 3. 引用的台词和视频字幕对不上（字幕见下方）
 4. 小红书违禁/限流词（如"最""第一"等绝对化用语、引流、站外平台名）
-不要改写风格，不要挑没问题的地方，不要加原作者出处或"侵删"之类的话。
+不要改写风格，不要挑没问题的地方，不要加原作者出处或"侵删"之类的话。${lessonsNote() ? `\n5. 违反了下面这些用户长期要求的地方也要指出：${lessonsNote()}` : ""}
 只输出 JSON，不要其他文字；字符串里不要用英文双引号，引用请用「」：
 {"issues":[{"where":"原文里有问题的片段","problem":"问题是什么（一句话）","fix":"改成什么"}],"revised":"把所有问题改好后的完整文案（没有问题就原样返回）"}
 
@@ -1026,6 +1118,21 @@ ${srt || "（没有）"}`;
       if (u.pathname === "/api/picks") { try { const saved = JSON.parse(readFileSync(path.join(JOBS, "picks.json"), "utf8")); return send(res, 200, { ...saved, picks: await withRealThumbs(saved.picks) }); } catch { return send(res, 200, { picks: [] }); } }
       if (u.pathname === "/api/retry" && req.method === "POST") { const { id } = await body(req); const j = jobs.find((x) => x.id === id); if (j && j.status === "failed") { Object.assign(j, { status: "queued", error: undefined, steps: 0, stage: -1, last: "排队中" }); saveJobs(); pump(); } return send(res, 200, { ok: true }); }
       if (u.pathname === "/api/revise" && req.method === "POST") { await reviseJob(await body(req)); return send(res, 200, { ok: true }); }
+      if (u.pathname === "/api/lessons" && req.method === "GET") return send(res, 200, { rules: rankedRules(), log: lessons.log });
+      if (u.pathname === "/api/lessons" && req.method === "POST") {
+        // 经验本用户说了算：改、删、置顶、手动加
+        const { action, id, rule } = await body(req);
+        const r = lessons.rules.find((x) => x.id === id);
+        const txt = String(rule || "").trim().slice(0, 80);
+        if (action === "delete" && r) lessons.rules.splice(lessons.rules.indexOf(r), 1);
+        else if (action === "pin" && r) r.pinned = !r.pinned;
+        else if (action === "edit" && r && txt) { r.rule = txt; r.at = Date.now(); }
+        else if (action === "history") { for (const j of jobs) for (const r of j.revisions || []) if (r.ok) learnFrom({ kind: r.big ? "chat" : "revise", text: r.text, job: j }); }
+        else if (action === "add" && txt) lessons.rules.push({ id: `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, rule: txt, why: "你手动加的", hits: 1, pinned: true, from: [], at: Date.now() });
+        else throw new Error("操作不对");
+        saveLessons();
+        return send(res, 200, { rules: rankedRules(), log: lessons.log });
+      }
       if (u.pathname === "/api/chat" && req.method === "POST") return send(res, 200, await chatJob(await body(req)));
       if (u.pathname === "/api/chat/approve" && req.method === "POST") { await approveChat(await body(req)); return send(res, 200, { ok: true }); }
       if (u.pathname === "/api/chat/clear" && req.method === "POST") { const { id } = await body(req); const j = jobs.find((x) => x.id === id); if (j) { j.chat = []; saveJobs(); } return send(res, 200, []); }

@@ -269,10 +269,109 @@ function SetupSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (o: b
   );
 }
 
+// 经验本：后台自己学，这里只是给你看、改、删、置顶；平时不用打开
+type Lesson = { id: string; rule: string; why: string; hits: number; pinned: boolean; at: number };
+type LessonLog = { at: number; action: "add" | "merge" | "skip" | "error"; rule?: string; why: string; src?: { title?: string; text?: string } };
+const LOG_LABEL: Record<string, string> = { add: "记住", merge: "合并", skip: "跳过", error: "出错" };
+function LessonsSheet({ open, onOpenChange, data, setData }: { open: boolean; onOpenChange: (o: boolean) => void; data: { rules: Lesson[]; log: LessonLog[] }; setData: (d: { rules: Lesson[]; log: LessonLog[] }) => void }) {
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [adding, setAdding] = useState("");
+  const [showLog, setShowLog] = useState(false);
+  const act = async (b: Record<string, unknown>) => { try { setData(await post("/api/lessons", b)); } catch (e) { toast.error((e as Error).message); } };
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full overflow-y-auto border-l-0 sm:max-w-[460px]">
+        <SheetHeader>
+          <SheetTitle>经验</SheetTitle>
+          <SheetDescription>你每次纠正，它会自己判断值不值得记住；记住的规则，Claude 和 Codex 以后做视频都会遵守。学歪了就删掉或改一下。</SheetDescription>
+        </SheetHeader>
+        <div className="space-y-4 px-4 pb-6">
+          <ul className="divide-y divide-border rounded-2xl bg-card shadow-card">
+            {!data.rules.length && <li className="p-4 text-xs text-muted-foreground">还没学到东西。成片后写修改意见、或者手改文案，它就会开始学。</li>}
+            {data.rules.map((r) => (
+              <li key={r.id} className="group p-3 text-[13px]">
+                {editing === r.id ? (
+                  <form className="flex gap-1.5" onSubmit={(e) => { e.preventDefault(); act({ action: "edit", id: r.id, rule: draft }); setEditing(null); }}>
+                    <Input autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} className="h-8 flex-1 text-[13px]" />
+                    <Button type="submit" size="sm" className="h-8">保存</Button>
+                  </form>
+                ) : (
+                  <div className="flex items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="leading-relaxed">{r.pinned && <span className="mr-1 text-primary">●</span>}{r.rule}</div>
+                      <div className="mt-0.5 text-[11px] text-muted-foreground">{r.hits > 1 ? `被提到 ${r.hits} 次 · ` : ""}{r.why}</div>
+                    </div>
+                    <div className="flex shrink-0 gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                      <Button size="xs" variant="ghost" onClick={() => act({ action: "pin", id: r.id })}>{r.pinned ? "取消置顶" : "置顶"}</Button>
+                      <Button size="icon-xs" variant="ghost" aria-label="修改" onClick={() => { setEditing(r.id); setDraft(r.rule); }}><PenLine /></Button>
+                      <Button size="icon-xs" variant="ghost" aria-label="删除" className="hover:text-destructive" onClick={() => act({ action: "delete", id: r.id })}><Trash2 /></Button>
+                    </div>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+          <form className="flex gap-1.5" onSubmit={(e) => { e.preventDefault(); if (adding.trim()) { act({ action: "add", rule: adding }); setAdding(""); } }}>
+            <Input value={adding} onChange={(e) => setAdding(e.target.value)} placeholder="自己加一条，比如：字幕中文用口语，别太书面" className="h-8 flex-1 text-xs" />
+            <Button type="submit" size="sm" variant="secondary" className="h-8" disabled={!adding.trim()}><Plus /> 加</Button>
+          </form>
+          {data.log.length > 0 && (
+            <div>
+              <button className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setShowLog((v) => !v)}>{showLog ? "收起" : "看看"}最近的判断（{data.log.length}）</button>
+              {showLog && (
+                <ul className="mt-2 space-y-2 text-[11px] leading-relaxed text-muted-foreground">
+                  {data.log.map((l, i) => (
+                    <li key={i}>
+                      <span className={cn("mr-1 rounded px-1", l.action === "skip" ? "bg-secondary" : l.action === "error" ? "bg-destructive/10 text-destructive" : "bg-primary/10 text-primary")}>{LOG_LABEL[l.action]}</span>
+                      {l.rule && <span className="text-foreground">{l.rule} · </span>}{l.why}
+                      {l.src?.text && <div className="line-clamp-1 opacity-70">来自「{l.src.title}」：{l.src.text}</div>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+// 后台每 20 秒看一眼经验本；学到新规则时右下角轻提示，可以当场撤销
+function useLessons(notify = false) {
+  const [data, setData] = useState<{ rules: Lesson[]; log: LessonLog[] }>({ rules: [], log: [] });
+  const seen = useRef<number | null>(null);
+  useEffect(() => {
+    const tick = () => fetch("/api/lessons").then((r) => r.json()).then((d) => {
+      setData(d);
+      const newest = d.log[0]?.at || 0;
+      if (notify && seen.current !== null) {
+        for (const l of d.log.filter((x: LessonLog) => x.at > seen.current! && (x.action === "add" || x.action === "merge")).reverse()) {
+          const r = d.rules.find((x: Lesson) => x.rule === l.rule);
+          toast(l.action === "add" ? "学到一条新经验" : "经验更新了", {
+            description: l.rule,
+            duration: 8000,
+            action: r && l.action === "add" ? { label: "撤销", onClick: () => post("/api/lessons", { action: "delete", id: r.id }).then((x) => setData(x as typeof d)).catch(() => {}) } : undefined,
+          });
+        }
+      }
+      seen.current = Math.max(seen.current || 0, newest);
+    }).catch(() => {});
+    tick();
+    const t = setInterval(tick, 20000);
+    return () => clearInterval(t);
+  }, []);
+  return [data, setData] as const;
+}
+
 function Sidebar() {
   const { page, setPage, theme, setTheme, drafts, jobs, setup } = useStudio();
   const lack = setup?.items.filter((i) => !i.ok).length || 0;
   const [setupOpen, setSetupOpen] = useState(false);
+  const [lessonsOpen, setLessonsOpen] = useState(false);
+  const [lessonData, setLessonData] = useLessons(true);
+  useEffect(() => { const o = () => setLessonsOpen(true); window.addEventListener("open-lessons", o); return () => window.removeEventListener("open-lessons", o); }, []);
   // 第一次打开且连找视频都做不了时，直接把环境面板弹出来
   useEffect(() => { if (setup?.items.some((i) => i.id === "ytdlp" && !i.ok)) setSetupOpen(true); }, [setup?.platform]); // eslint-disable-line react-hooks/exhaustive-deps
   const active = jobs.filter((j) => j.status === "running" || j.status === "queued").length + drafts.length;
@@ -315,6 +414,11 @@ function Sidebar() {
           {setup && <span className={cn("ml-auto", lack ? "font-medium text-[var(--warning)]" : "")}>{lack ? `还差 ${lack} 项` : "已就绪"}</span>}
         </button>
         <SetupSheet open={setupOpen} onOpenChange={setSetupOpen} />
+        <button onClick={() => setLessonsOpen(true)} className="-mt-2 flex w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground">
+          <Sparkles className="size-3.5" />经验
+          <span className="ml-auto">{lessonData.rules.length ? `${lessonData.rules.length} 条` : "还没有"}</span>
+        </button>
+        <LessonsSheet open={lessonsOpen} onOpenChange={setLessonsOpen} data={lessonData} setData={setLessonData} />
         <div className="flex items-center justify-between px-1">
           <span className="text-xs text-muted-foreground">外观</span>
           <Segmented<Theme>
@@ -951,10 +1055,10 @@ function CaptionEditor({ j, caption }: { j: Job; caption: string }) {
   const [check, setCheck] = useState<CaptionCheck | null>(null);
   useEffect(() => { setText(caption); setSaved(caption); setEditing(false); setCheck(null); }, [j.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const dirty = text !== saved;
-  const save = async (t = text) => {
+  const save = async (t = text, source?: "ai") => {
     if (t === saved || saving) return true;
     setSaving(true);
-    const ok = await saveCaption(j.id, t);
+    const ok = await saveCaption(j.id, t, source);
     if (ok) { setSaved(t); toast.success("文案已保存"); }
     setSaving(false);
     return ok;
@@ -969,7 +1073,7 @@ function CaptionEditor({ j, caption }: { j: Job; caption: string }) {
     if (!r.issues.length) { toast.success("AI 检查完了，没发现问题"); return; }
     setCheck(r);
   };
-  const adopt = async () => { if (!check) return; setText(check.revised); setCheck(null); await save(check.revised); };
+  const adopt = async () => { if (!check) return; setText(check.revised); setCheck(null); await save(check.revised, "ai"); };
   return (
     <div className="flex shrink-0 flex-col">
       <div className="mb-1.5 flex items-center gap-2 text-sm font-semibold">
@@ -1157,6 +1261,45 @@ function WorkCard({ j, onOpen }: { j: Job; onOpen: () => void }) {
   );
 }
 
+// 作品库顶部的"成长记录"：平时一行，点开像更新日志一样按日期列出学到了什么
+function GrowthCard() {
+  const [data] = useLessons();
+  const [open, setOpen] = useState(false);
+  // 只列现在有效的规则（删掉的、被覆盖的不显示），最近学到或更新的在前
+  const learned = [...data.rules].sort((a, b) => b.at - a.at);
+  if (!learned.length) return null;
+  const day = (t: number) => new Date(t).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
+  const groups = learned.reduce<Record<string, Lesson[]>>((g, l) => { (g[day(l.at)] ||= []).push(l); return g; }, {});
+  return (
+    <div className="mb-6 rounded-2xl border border-border/70 bg-card text-[13px]">
+      <button className="flex w-full items-center gap-2 px-4 py-2.5 text-left" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        <Sparkles className="size-3.5 shrink-0 text-primary" />
+        <span className="shrink-0 font-medium">最近学到</span>
+        <span className="min-w-0 flex-1 truncate text-muted-foreground">{learned[0].rule}</span>
+        <span className="shrink-0 text-xs text-muted-foreground">共 {data.rules.length} 条 · {open ? "收起" : "展开"}</span>
+      </button>
+      {open && (
+        <div className="border-t border-border/70 px-4 pb-3 pt-2">
+          {Object.entries(groups).map(([d, list]) => (
+            <div key={d} className="mt-2">
+              <div className="mb-1 text-[11px] font-medium text-muted-foreground">{d}</div>
+              <ul className="space-y-1.5">
+                {list.map((l, i) => (
+                  <li key={i} className="flex gap-2">
+                    <span className={cn("mt-0.5 h-fit shrink-0 rounded px-1 text-[10px]", l.hits > 1 ? "bg-secondary text-muted-foreground" : "bg-primary/10 text-primary")}>{l.hits > 1 ? `${l.hits} 次` : "新"}</span>
+                    <div className="min-w-0">{l.pinned && <span className="mr-1 text-primary">●</span>}{l.rule}</div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+          <button className="mt-3 text-xs text-muted-foreground hover:text-foreground" onClick={() => window.dispatchEvent(new Event("open-lessons"))}>管理经验 →</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LibraryPage() {
   const { jobs, setPage, pollJobs } = useStudio();
   const [kind, setKind] = useState<"all" | "clip" | "tpl">("all");
@@ -1175,6 +1318,7 @@ function LibraryPage() {
         <PageTitle title="作品库" sub={`${done.length} 条成片 · 点封面播放和对文案`} />
         {done.some(isTpl) && done.some((j) => !isTpl(j)) && <div className="mb-8 ml-auto"><Segmented value={kind} onChange={setKind} options={[{ v: "all", label: "全部" }, { v: "clip", label: "双语字幕" }, { v: "tpl", label: "快问快答" }]} /></div>}
       </div>
+      <GrowthCard />
       {shown.length ? (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(200px,1fr))] gap-x-5 gap-y-8">{shown.map((j) => <WorkCard key={j.id} j={j} onOpen={() => open(j)} />)}</div>
       ) : (

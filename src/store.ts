@@ -137,7 +137,7 @@ type State = {
   retry: (id: string) => Promise<void>;
   cancelJob: (id: string) => Promise<void>;
   deleteJob: (id: string) => Promise<void>;
-  saveCaption: (id: string, text: string) => Promise<boolean>;
+  saveCaption: (id: string, text: string, source?: "ai") => Promise<boolean>;
   checkCaption: (id: string, text: string) => Promise<CaptionCheck | null>;
   init: () => Promise<void>;
 };
@@ -306,7 +306,12 @@ export const useStudio = create<State>((set, get) => ({
         const was = prev.find((p) => p.id === j.id)?.status;
         if (was !== "running" || j.status === was) continue;
         const name = j.outputs?.summary?.title || j.title;
-        if (j.status === "done") toast.success(`做好了：${name}`, { duration: 10000, action: { label: "去看看", onClick: () => get().setPage("library") } });
+        // 修改失败时作品会回到作品库（状态还是 done），要看这次修改记录的结果，不能报"做好了"
+        const p = prev.find((x) => x.id === j.id);
+        const rev = (j.revisions?.length || 0) > (p?.revisions?.length || 0) ? j.revisions!.at(-1) : null;
+        if (rev && !rev.ok) toast.error(`没改成：${name}`, { description: rev.note, duration: 15000, action: { label: "查看", onClick: () => get().setPage("library") } });
+        else if (rev) toast.success(`改好了：${name}`, { description: rev.note, duration: 10000, action: { label: "去看看", onClick: () => get().setPage("library") } });
+        else if (j.status === "done") toast.success(`做好了：${name}`, { duration: 10000, action: { label: "去看看", onClick: () => get().setPage("library") } });
         else if (j.status === "failed" && j.error !== "已取消") toast.error(`没做成：${name}`, { description: j.error, duration: 10000, action: { label: "查看", onClick: () => get().setPage("studio") } });
       }
       set({ jobs });
@@ -317,7 +322,7 @@ export const useStudio = create<State>((set, get) => ({
   retry: async (id) => { await post("/api/retry", { id }).catch(fail); get().pollJobs(); },
   cancelJob: async (id) => { await post("/api/jobs/cancel", { id }).catch(fail); get().pollJobs(); },
   checkCaption: (id, text) => post<CaptionCheck>("/api/caption-check", { id, text }).catch((e) => { fail(e); return null; }),
-  saveCaption: async (id, text) => { const ok = await post("/api/caption", { id, text }).then(() => true).catch((e) => { fail(e); return false; }); get().pollJobs(); return ok; },
+  saveCaption: async (id, text, source) => { const ok = await post("/api/caption", { id, text, source }).then(() => true).catch((e) => { fail(e); return false; }); get().pollJobs(); return ok; },
   deleteJob: async (id) => { await post("/api/jobs/delete", { id }).then(() => toast("已删除", { description: "文件夹移到了 jobs/_trash，需要时可以找回" })).catch(fail); get().pollJobs(); },
 
   init: async () => {
