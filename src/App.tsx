@@ -5,7 +5,7 @@ import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-
 import { CSS } from "@dnd-kit/utilities";
 import {
   AlertTriangle, Check, Clapperboard, Compass, Copy, Download, Eye, FileArchive, Film, FolderOpen, GripVertical, LayoutTemplate, Library, Link2, Loader2, LogIn,
-  MessageSquare, Monitor, Moon, MoreHorizontal, PenLine, Send, Play, Plus, RotateCw, Search, Settings2, Sparkles, Sun, Trash2, Wrench, X,
+  Monitor, Moon, MoreHorizontal, PenLine, Send, Play, Plus, RotateCw, Search, Settings2, Sparkles, Sun, Trash2, Wrench, X,
 } from "lucide-react";
 import { Dialog } from "radix-ui";
 import { toast } from "sonner";
@@ -283,7 +283,7 @@ function LessonsSheet({ open, onOpenChange, data, setData }: { open: boolean; on
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full overflow-y-auto border-l-0 sm:max-w-[460px]">
         <SheetHeader>
-          <SheetTitle>经验</SheetTitle>
+          <SheetTitle>更新</SheetTitle>
           <SheetDescription>你每次纠正，它会自己判断值不值得记住；记住的规则，Claude 和 Codex 以后做视频都会遵守。学歪了就删掉或改一下。</SheetDescription>
         </SheetHeader>
         <div className="space-y-4 px-4 pb-6">
@@ -400,7 +400,7 @@ function Sidebar() {
         </button>
         <SetupSheet open={setupOpen} onOpenChange={setSetupOpen} />
         <button onClick={() => setLessonsOpen(true)} className="-mt-2 flex w-full items-center gap-2 rounded-[10px] px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground">
-          <Sparkles className="size-3.5" />经验
+          <Sparkles className="size-3.5" />更新
           <span className="ml-auto">{lessonData.rules.length ? `${lessonData.rules.length} 条` : "还没有"}</span>
         </button>
         <LessonsSheet open={lessonsOpen} onOpenChange={setLessonsOpen} data={lessonData} setData={setLessonData} />
@@ -1119,7 +1119,7 @@ function CaptionEditor({ j, caption }: { j: Job; caption: string }) {
 }
 
 // 大改的对话框：AI 只说理解和打算，不动文件；点「同意，开始改」才排队修改
-function ChatPanel({ j, onClose, onStarted }: { j: Job; onClose: () => void; onStarted: () => void }) {
+function ChatPanel({ j, onStarted }: { j: Job; onStarted: () => void }) {
   const { pollJobs } = useStudio();
   const [msgs, setMsgs] = useState<ChatMsg[]>(j.chat || []);
   const [text, setText] = useState("");
@@ -1144,31 +1144,65 @@ function ChatPanel({ j, onClose, onStarted }: { j: Job; onClose: () => void; onS
   const clear = async () => { setMsgs(await post<ChatMsg[]>("/api/chat/clear", { id: j.id }).catch(() => msgs)); };
   const last = [...msgs].reverse().find((m) => m.role !== "user");
   const canGo = last?.role === "ai" && !!last.plan && !last.approved;
+  const time = (t: number) => new Date(t).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  const Avatar = () => <div className="grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-b from-[#3a3a3c] to-black text-[11px] font-bold text-white dark:from-white dark:to-[#d1d1d6] dark:text-black">K</div>;
   return (
-    <div className="flex w-[340px] shrink-0 flex-col border-l border-border/70">
-      <div className="flex items-center gap-2 border-b border-border/70 px-4 py-3 text-sm font-semibold">
-        <MessageSquare className="size-4" /> 对话大改
-        {msgs.length > 0 && <button className="ml-auto text-xs font-normal text-muted-foreground hover:text-foreground" onClick={clear} disabled={!!busy}>清空</button>}
-        <button aria-label="收起对话" className={cn("grid size-7 place-items-center rounded-full text-muted-foreground hover:bg-secondary", !msgs.length && "ml-auto")} onClick={onClose}><X className="size-3.5" /></button>
+    <div className="flex h-[440px] shrink-0 flex-col overflow-hidden rounded-2xl border border-[#0a84ff]/25 bg-background shadow-[0_0_0_3px_rgba(10,132,255,0.05)]">
+      {/* 顶栏：像手机聊天的联系人栏 */}
+      <div className="flex items-center gap-2.5 border-b border-[#0a84ff]/15 bg-[#0a84ff]/[0.06] px-4 py-3">
+        <Avatar />
+        <div className="min-w-0 flex-1 leading-tight">
+          <div className="text-sm font-semibold">AI 对话修改</div>
+          <div className="text-[11px] text-muted-foreground">{busy === "talk" ? "正在输入…" : busy === "go" ? "开始修改…" : "跟 AI 说想怎么改，它先讲打算，你同意才动手"}</div>
+        </div>
+        {msgs.length > 0 && <button className="text-xs text-muted-foreground hover:text-foreground" onClick={clear} disabled={!!busy}>清空</button>}
       </div>
-      <div className="flex-1 space-y-3 overflow-y-auto p-4 text-[13px] leading-relaxed">
-        {!msgs.length && <div className="text-xs text-muted-foreground">说说想怎么大改，比如「整体字幕太密，前 10 秒剪掉，标题换成更有冲击力的」。AI 会先讲它的理解和打算，你同意了才动手。</div>}
-        {msgs.map((m, i) => m.role === "sys" ? (
-          <div key={i} className="text-center text-[11px] text-muted-foreground">— {m.text} —</div>
-        ) : (
-          <div key={i} className={cn("max-w-[92%] whitespace-pre-wrap rounded-2xl px-3 py-2", m.role === "user" ? "ml-auto bg-primary text-primary-foreground" : "bg-secondary")}>
-            {m.text.replace(/\*\*|`/g, "")}
-            {m.plan && <div className="mt-1.5 text-[11px] opacity-70">要改：{(m.scopes || []).map((k) => REVISE_LABEL[k]).join("、") || "AI 判断"}{m.approved ? " · 已同意" : ""}</div>}
+      {/* 消息区 */}
+      <div className="flex-1 space-y-2.5 overflow-y-auto px-3 py-4 text-[14px] leading-relaxed">
+        {!msgs.length && (
+          <div className="flex items-end gap-2">
+            <Avatar />
+            <div className="max-w-[80%] rounded-[18px] rounded-bl-[6px] bg-secondary px-3.5 py-2">想怎么改这条？直接跟我说就行，比如「字幕太密了，前 10 秒剪掉，标题换个更抓人的」。我先说打算，你点同意我再动手。</div>
           </div>
-        ))}
-        {busy === "talk" && <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" /> AI 在想怎么改…</div>}
+        )}
+        {msgs.map((m, i) => {
+          const prev = msgs[i - 1];
+          const showTime = !prev || m.at - prev.at > 5 * 60 * 1000;
+          return (
+            <div key={i}>
+              {showTime && <div className="my-2 text-center text-[11px] text-muted-foreground">{time(m.at)}</div>}
+              {m.role === "sys" ? (
+                <div className="text-center"><span className="rounded-full bg-secondary px-2.5 py-0.5 text-[11px] text-muted-foreground">{m.text}</span></div>
+              ) : m.role === "user" ? (
+                <div className="flex justify-end"><div className="max-w-[80%] whitespace-pre-wrap rounded-[18px] rounded-br-[6px] bg-[#0a84ff] px-3.5 py-2 text-white">{m.text}</div></div>
+              ) : (
+                <div className="flex items-end gap-2">
+                  <Avatar />
+                  <div className="max-w-[80%] whitespace-pre-wrap rounded-[18px] rounded-bl-[6px] bg-secondary px-3.5 py-2">
+                    {m.text.replace(/\*\*|`/g, "")}
+                    {m.plan && <div className="mt-1.5 border-t border-border/60 pt-1.5 text-[11px] text-muted-foreground">要改：{(m.scopes || []).map((k) => REVISE_LABEL[k]).join("、") || "AI 判断"}{m.approved ? " · 已同意" : ""}</div>}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {busy === "talk" && (
+          <div className="flex items-end gap-2">
+            <Avatar />
+            <div className="flex gap-1 rounded-[18px] rounded-bl-[6px] bg-secondary px-3.5 py-3">
+              {[0, 1, 2].map((d) => <span key={d} className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60" style={{ animationDelay: `${d * 150}ms` }} />)}
+            </div>
+          </div>
+        )}
         <div ref={end} />
       </div>
+      {/* 底部：同意按钮 + 圆角输入条 */}
       <div className="border-t border-border/70 p-3">
         {canGo && <Button className="mb-2 w-full rounded-full" onClick={approve} disabled={!!busy}>{busy === "go" ? <Loader2 className="animate-spin" /> : <Check />} 同意，开始改</Button>}
-        <div className="flex items-end gap-1.5">
-          <Textarea value={text} onChange={(e) => setText(e.target.value)} placeholder={canGo ? "不对的话接着说…" : "想怎么改？"} className="min-h-10 rounded-xl text-[13px]" onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); say(); } }} />
-          <Button size="icon-sm" className="shrink-0 rounded-full" aria-label="发送" onClick={say} disabled={!text.trim() || !!busy}><Send /></Button>
+        <div className="flex items-end gap-2 rounded-[22px] border border-border bg-card py-1 pl-4 pr-1">
+          <textarea rows={1} value={text} onChange={(e) => setText(e.target.value)} placeholder={canGo ? "不对的话接着说…" : "发消息…"} className="max-h-28 min-h-8 flex-1 resize-none bg-transparent py-1.5 text-[14px] outline-none [field-sizing:content] placeholder:text-muted-foreground" onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); say(); } }} />
+          <button aria-label="发送" onClick={say} disabled={!text.trim() || !!busy} className="grid size-8 shrink-0 place-items-center rounded-full bg-[#0a84ff] text-white transition-opacity disabled:opacity-30"><Send className="size-4" /></button>
         </div>
       </div>
     </div>
@@ -1178,7 +1212,6 @@ function ChatPanel({ j, onClose, onStarted }: { j: Job; onClose: () => void; onS
 // 在页面里直接看成片、对文案，不用跳新标签页
 function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
   const { deleteJob } = useStudio();
-  const [chat, setChat] = useState(!!j.chat?.length);
   const canChat = !j.id.startsWith("tpl-");
   const o = j.outputs || {};
   const uncertain = o.summary?.uncertain || [];
@@ -1186,7 +1219,7 @@ function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
     <Dialog.Root open onOpenChange={(open) => !open && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
-        <Dialog.Content aria-describedby={undefined} className={cn("fixed left-1/2 top-1/2 z-50 flex max-h-[92vh] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-3xl bg-card shadow-2xl outline-none", chat ? "w-[min(1220px,96vw)]" : "w-[min(880px,94vw)]")}>
+        <Dialog.Content aria-describedby={undefined} className="fixed left-1/2 top-1/2 z-50 flex max-h-[92vh] w-[min(940px,94vw)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-3xl bg-card shadow-2xl outline-none">
           <div className="grid shrink-0 place-items-center bg-black">
             {o.video ? <video src={o.video} poster={o.cover || undefined} controls autoPlay className="aspect-[9/16] h-[min(92vh,720px)]" /> : <div className="grid aspect-[9/16] h-[min(92vh,720px)] place-items-center text-white/50"><Film /></div>}
           </div>
@@ -1196,7 +1229,6 @@ function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
                 <Dialog.Title className="text-lg font-semibold leading-snug tracking-tight">{jobTitle(j)}</Dialog.Title>
                 <div className="mt-1 text-xs text-muted-foreground">{jobDate(j)}{o.summary?.summary && ` · ${o.summary.summary}`}</div>
               </div>
-              {canChat && !chat && <Button size="xs" variant="secondary" className="mt-1 shrink-0 rounded-full" onClick={() => setChat(true)}><MessageSquare /> 对话大改</Button>}
               <Dialog.Close aria-label="关闭" className="grid size-8 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground"><X className="size-4" /></Dialog.Close>
             </div>
             {uncertain.length > 0 && (
@@ -1206,7 +1238,8 @@ function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
               </div>
             )}
             <CaptionEditor j={j} caption={o.caption || ""} />
-            {!j.id.startsWith("tpl-") && <ReviseBox j={j} onSent={onClose} />}
+            {canChat && <ChatPanel j={j} onStarted={onClose} />}
+            {canChat && <ReviseBox j={j} onSent={onClose} />}
             <div className="flex flex-wrap items-center gap-2">
               {o.video && <Button className="rounded-full" asChild><a href={`/api/pack?id=${encodeURIComponent(j.id)}`} download><Download /> 下载 zip</a></Button>}
               {o.video && <Button variant="secondary" className="rounded-full" onClick={() => copyZip(j.id)}><FileArchive /> 复制 zip</Button>}
@@ -1214,7 +1247,6 @@ function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
               <Button variant="ghost" className="ml-auto rounded-full text-muted-foreground hover:text-destructive" onClick={() => { if (window.confirm("从作品库删除这条？文件会移到 jobs/_trash，需要时还能找回。")) { onClose(); setTimeout(() => deleteJob(j.id), 300); } }}><Trash2 /> 删除</Button>
             </div>
           </div>
-          {canChat && chat && <ChatPanel j={j} onClose={() => setChat(false)} onStarted={onClose} />}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
