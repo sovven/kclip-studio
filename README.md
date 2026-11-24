@@ -37,6 +37,9 @@ npm start        # 构建页面并启动 → http://localhost:5291
 - 所有数据（作品、缓存、API Key、设置）都在本机的 `jobs/` 文件夹，不上传，也不进 git。
 - 服务只监听本机（127.0.0.1）。它能让 AI 在你的电脑上执行命令，不要把它暴露到公网；确实要给局域网里别的设备用，自己设环境变量 `HOST=0.0.0.0`。
 - 路径也可以用环境变量指定：`KCLIP_YTDLP`、`KCLIP_WHISPER`、`KCLIP_WHISPER_MODEL`、`KCLIP_SKILL`、`KCLIP_FONTS`；端口用 `PORT`。
-- 制作一条视频要让 AI 跑 10–20 分钟，消耗的是你自己账号的额度。
+- 制作一条视频要让 AI 跑 10–20 分钟，消耗的是你自己账号的额度。Claude Code 和 Codex 两条线路都能整条出片、按意见修改，在左下角切换。
+- Codex 线路全程在沙盒里运行：只能改这条作品自己的文件夹，文字类任务只读。需要启动其他程序的步骤（下载原片、Remotion 渲染、出封面、打包剪映素材等）由工作台按固定白名单代跑（`/api/helper`，凭一次性口令，只认当前正在制作的那条）。
+- 临时文件放在作品文件夹的 `work/tmp`，做完自动删除；Codex 运行不保存对话记录。
+- 成片做好后：小问题在「修改意见」框里写（勾选只作参考，以文字为准）；大改点「对话大改」，AI 先说理解和打算，你点「同意」才动手。文案可以直接点铅笔改，或用「AI 检查」挑错。
 
 前端：Vite + React + shadcn/ui（radix-nova）+ Lucide + Motion + react-resizable-panels + dnd-kit + Zustand。

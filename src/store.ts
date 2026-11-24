@@ -18,6 +18,8 @@ export type Video = {
 };
 export type CoverStyle = "band" | "poster" | "card" | "reels";
 export type Draft = { video: Video; coverStyle: CoverStyle; note: string; accent?: string; again?: boolean };
+export type CaptionCheck = { issues: { where: string; problem: string; fix: string }[]; revised: string };
+export type ChatMsg = { role: "user" | "ai" | "sys"; text: string; at: number; plan?: string; scopes?: string[]; approved?: boolean };
 export type Job = {
   id: string;
   vid: string;
@@ -34,7 +36,8 @@ export type Job = {
   finishedAt?: number;
   checked?: boolean;
   revision?: { text: string; scopes: string[]; at: number };
-  revisions?: { text: string; scopes: string[]; at: number; ok: boolean; note?: string }[];
+  revisions?: { text: string; scopes: string[]; by?: string; big?: boolean; at: number; ok: boolean; note?: string }[];
+  chat?: ChatMsg[];
   outputs: { video?: string | null; cover?: string | null; caption?: string | null; summary?: { title?: string; summary?: string; uncertain?: string[] } | null; folder?: string };
 };
 export type Category = { id: string; label: string; kind?: string; custom?: boolean; sources: string[]; found?: string[]; scouting?: boolean };
@@ -45,7 +48,7 @@ const api = async <T,>(url: string, init?: RequestInit): Promise<T> => {
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
 };
-const post = <T,>(url: string, data: unknown) => api<T>(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(data) });
+export const post = <T,>(url: string, data: unknown) => api<T>(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(data) });
 const fail = (e: unknown) => { toast.error((e as Error).message); };
 
 export type Page = "discover" | "studio" | "library" | "template";
@@ -65,8 +68,11 @@ applyTheme(savedTheme);
 export type Engine = "claude" | "codex";
 export type Route = { id: string; label: string; custom?: boolean };
 export type NewApi = { engine: Engine; name: string; baseUrl: string; apiKey: string; model: string };
-type Health = { loggedIn: boolean; engine: Engine; route: string; routes: Record<Engine, Route[]>; loginCmd: string };
-const pickHealth = (h: Health) => ({ loggedIn: h.loggedIn, engine: h.engine, route: h.route, routes: h.routes, loginCmd: h.loginCmd });
+type Health = { loggedIn: boolean; engine: Engine; route: string; routes: Record<Engine, Route[]>; loginCmd: string; loggingIn?: boolean; switched?: string | null };
+const pickHealth = (h: Health) => {
+  if (h.switched) toast.success("已自动连上你的账号", { description: `当前线路没登录，换成了已登录的「${h.switched}」` });
+  return { loggedIn: h.loggedIn, engine: h.engine, route: h.route, routes: h.routes, loginCmd: h.loginCmd, loggingIn: !!h.loggingIn };
+};
 
 export type SetupItem = { id: string; label: string; need: string; ok: boolean; detail?: string; edit?: string; cmd?: string; url?: string; hint?: string };
 export type Setup = { platform: string; dataDir: string; items: SetupItem[] };
@@ -86,6 +92,8 @@ type State = {
   route: string;
   routes: Record<Engine, Route[]>;
   loginCmd: string;
+  loggingIn: boolean;
+  login: () => Promise<void>;
   recheck: () => Promise<void>;
   setup: Setup | null;
   loadSetup: () => Promise<void>;
@@ -129,6 +137,8 @@ type State = {
   retry: (id: string) => Promise<void>;
   cancelJob: (id: string) => Promise<void>;
   deleteJob: (id: string) => Promise<void>;
+  saveCaption: (id: string, text: string) => Promise<boolean>;
+  checkCaption: (id: string, text: string) => Promise<CaptionCheck | null>;
   init: () => Promise<void>;
 };
 
@@ -150,6 +160,22 @@ export const useStudio = create<State>((set, get) => ({
   route: "relay",
   routes: { claude: [], codex: [] },
   loginCmd: "claude /login",
+  loggingIn: false,
+  login: async () => {
+    try { await post("/api/login", {}); } catch (e) { fail(e); return; }
+    set({ loggingIn: true });
+    toast("浏览器里打开了登录页", { description: "在网页上点「授权 / Authorize」，回到这里会自动连上" });
+    // 登录进程结束（授权完或放弃）之前每 3 秒查一次
+    for (let i = 0; i < 110; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const h = await api<Health>("/api/health?fresh=1").catch(() => null);
+      if (!h) continue;
+      set(pickHealth(h));
+      if (h.loggedIn) { toast.success("登录成功，AI 已就绪"); return; }
+      if (!h.loggingIn) { toast.error("没有完成登录", { description: "可以再点一次「一键登录」" }); return; }
+    }
+    set({ loggingIn: false });
+  },
   recheck: async () => {
     set({ loggedIn: null });
     try { set(pickHealth(await api<Health>("/api/health?fresh=1"))); } catch (e) { fail(e); }
@@ -290,6 +316,8 @@ export const useStudio = create<State>((set, get) => ({
   },
   retry: async (id) => { await post("/api/retry", { id }).catch(fail); get().pollJobs(); },
   cancelJob: async (id) => { await post("/api/jobs/cancel", { id }).catch(fail); get().pollJobs(); },
+  checkCaption: (id, text) => post<CaptionCheck>("/api/caption-check", { id, text }).catch((e) => { fail(e); return null; }),
+  saveCaption: async (id, text) => { const ok = await post("/api/caption", { id, text }).then(() => true).catch((e) => { fail(e); return false; }); get().pollJobs(); return ok; },
   deleteJob: async (id) => { await post("/api/jobs/delete", { id }).then(() => toast("已删除", { description: "文件夹移到了 jobs/_trash，需要时可以找回" })).catch(fail); get().pollJobs(); },
 
   init: async () => {

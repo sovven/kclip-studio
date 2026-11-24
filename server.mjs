@@ -1,8 +1,9 @@
 // KCLIP Studio 后端：发现韩国短视频 → AI 推荐 → 排队制作（调用本机 Claude Code 或 Codex + xhs-bilingual-clip skill）
 // 运行：node server.mjs   （端口 5291；前端 dev 在 5290，build 后由本服务直接托管 dist/）
 import { spawn, execFile } from "node:child_process";
-import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, appendFileSync, copyFileSync } from "node:fs";
+import { createReadStream, rmSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, appendFileSync, copyFileSync } from "node:fs";
 import http from "node:http";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { createTplApi } from "./tpl.mjs";
 import { createPackApi } from "./pack.mjs";
@@ -322,24 +323,64 @@ async function search(q) {
 
 // Agent 登录状态（制作和 AI 推荐都靠它）；自定义 API 不检查连通性，有 Key 就算已配置
 let health = { loggedIn: null, at: 0 };
+// 检查某条内置线路有没有登录（不动当前设置）
+async function routeLoggedIn(engine, route) {
+  try {
+    if (engine === "codex") { await run("codex", ["login", "status"], { shell: true, timeout: 30000, env: BASE_ENV }); return true; }
+    const env = route === "official" ? { ...BASE_ENV, CLAUDE_CONFIG_DIR: OFFICIAL_DIR } : BASE_ENV;
+    return !!JSON.parse(await run("claude", ["auth", "status"], { shell: true, timeout: 30000, env })).loggedIn;
+  } catch (e) {
+    try { return !!JSON.parse(String(e.message).slice(String(e.message).indexOf("{"))).loggedIn; } catch { return false; }
+  }
+}
 async function getHealth(force) {
   if (force) health.at = 0;
   const custom = currentApi();
-  if (Date.now() - health.at > 60000) try {
-    if (custom) health = { loggedIn: true, at: Date.now() };
-    else if (auth.engine === "codex") {
-      await run("codex", ["login", "status"], { shell: true, timeout: 30000, env: BASE_ENV });
-      health = { loggedIn: true, at: Date.now() };
-    } else {
-      const out = await run("claude", ["auth", "status"], { shell: true, timeout: 30000, env: claudeEnv() });
-      health = { loggedIn: !!JSON.parse(out).loggedIn, at: Date.now() };
+  if (Date.now() - health.at > 60000) {
+    let switched = null;
+    let ok = custom ? true : await routeLoggedIn(auth.engine, auth.routes[auth.engine]);
+    // 当前线路没登录、也不在登录中：自动找一条已经登录的线路换过去
+    if (!ok && !loginProc && !userPicked) {
+      const order = [["claude", "official"], ["claude", "relay"], ["codex", "default"]].filter(([e, r]) => !(e === auth.engine && r === auth.routes[e]));
+      for (const [e, r] of order) {
+        if (await routeLoggedIn(e, r)) {
+          auth.engine = e; auth.routes[e] = r;
+          writeFileSync(AUTH_FILE, JSON.stringify(auth, null, 2));
+          switched = `${e === "codex" ? "Codex" : "Claude Code"} · ${BUILTIN_ROUTES[e].find((x) => x.id === r).label}`;
+          ok = true;
+          break;
+        }
+      }
     }
-  } catch {
-    health = { loggedIn: false, at: Date.now() };
+    health = { loggedIn: ok, at: Date.now(), switched };
   }
   const loginCmd = auth.engine === "codex" ? "codex login" : auth.routes.claude === "official" ? `$env:CLAUDE_CONFIG_DIR="${OFFICIAL_DIR}"; claude.cmd /login` : "claude.cmd /login";
   const routes = Object.fromEntries(Object.entries(BUILTIN_ROUTES).map(([e, list]) => [e, [...list, ...auth.apis.filter((a) => a.engine === e).map((a) => ({ id: a.id, label: a.name, custom: true }))]]));
-  return { ...health, engine: auth.engine, route: auth.routes[auth.engine], routes, loginCmd };
+  const out = { ...health, engine: auth.engine, route: auth.routes[auth.engine], routes, loginCmd, loggingIn: !!loginProc, canLogin: !custom };
+  health.switched = null; // 自动切换只提示一次
+  return out;
+}
+
+// 一键登录：服务端自己跑登录命令，CLI 会打开浏览器授权页，用户点「授权」即可，不用开终端
+let loginProc = null;
+let userPicked = false; // 用户这次手动选过线路，就别再自动换走
+function startLogin() {
+  if (currentApi()) throw new Error("自定义 API 不需要登录，填好 Key 就能用");
+  if (loginProc) return;
+  const codex = auth.engine === "codex";
+  if (!codex) mkdirSync(OFFICIAL_DIR, { recursive: true });
+  const p = codex
+    ? spawn("codex", ["login"], { shell: true, windowsHide: true, env: BASE_ENV })
+    : spawn("claude", ["auth", "login", "--claudeai"], { shell: true, windowsHide: true, env: claudeEnv() });
+  loginProc = p;
+  let log = "";
+  const keep = (d) => { log = (log + d).slice(-4000); };
+  p.stdout.on("data", keep);
+  p.stderr.on("data", keep);
+  const done = () => { if (loginProc === p) loginProc = null; health.at = 0; };
+  p.on("exit", (code) => { if (code) console.log("[login] exit", code, log.slice(-500)); done(); });
+  p.on("error", done);
+  setTimeout(() => { if (loginProc === p) { p.kill(); done(); } }, 5 * 60000); // 5 分钟没授权就放弃
 }
 
 // 本周热门爱豆/话题：已抓取候选里的 #标签，按播放量加权（去掉 #shorts 这类通用标签）
@@ -381,6 +422,8 @@ const saveAuth = () => {
   health.at = 0; // 换线路后重新检查登录
 };
 const currentApi = () => auth.apis.find((a) => a.engine === auth.engine && a.id === auth.routes[auth.engine]);
+// 临时文件一律放 D 盘（作品文件夹 work/tmp，或 jobs/_tmp），不往 C 盘系统 Temp 写；作品做完就删
+const withTmp = (env, dir) => { const t = path.join(dir, "work", "tmp"); mkdirSync(t, { recursive: true }); return { ...env, TEMP: t, TMP: t, TMPDIR: t }; };
 const claudeEnv = () => {
   const custom = currentApi();
   if (auth.engine === "claude" && custom) return { ...BASE_ENV, CLAUDE_CONFIG_DIR: CLAUDE_API_DIR, ANTHROPIC_BASE_URL: custom.baseUrl, ANTHROPIC_AUTH_TOKEN: custom.apiKey };
@@ -393,6 +436,7 @@ function setRoute({ engine, route }) {
     if (!known) throw new Error("没有这条线路");
     auth.routes[auth.engine] = route;
   }
+  userPicked = true;
   mkdirSync(OFFICIAL_DIR, { recursive: true });
   saveAuth();
 }
@@ -426,7 +470,7 @@ const runClaude = (prompt, { cwd = ROOT, onLine, model, web, effort, onSpawn } =
     if (web) args.push("--tools", "WebSearch,WebFetch", "--allowedTools", "WebSearch", "WebFetch");
     else if (!onLine) args.push("--tools", '""'); // 选题、出词这类纯文字任务不给工具，否则它会去翻项目文件，又慢又答非所问
     if (onLine) args.push("--allowedTools", "Bash", "PowerShell", "Read", "Write", "Edit", "Glob", "Grep", "Skill", "--add-dir", cfg.skill, cfg.skillModules);
-    const p = spawn("claude", args, { cwd, shell: true, windowsHide: true, env: claudeEnv() });
+    const p = spawn("claude", args, { cwd, shell: true, windowsHide: true, env: withTmp(claudeEnv(), onLine ? cwd : path.join(JOBS, "_tmp")) });
     onSpawn?.(p);
     p.stdin.end(prompt); // 提示词走 stdin，避免 Windows 命令行转义问题
     let buf = "", all = "";
@@ -447,28 +491,36 @@ const runClaude = (prompt, { cwd = ROOT, onLine, model, web, effort, onSpawn } =
     });
   });
 // 返回值和 claude -p --output-format json 同形（result 字段是最后一条回复），调用方不用区分引擎
-const runCodex = (prompt, { cwd = ROOT, onLine, web, onSpawn } = {}) =>
+const runCodex = (prompt, { cwd = ROOT, onLine, web, effort, onSpawn } = {}) =>
   new Promise((res, rej) => {
     const custom = currentApi();
     const args = ["exec", "--json", "--skip-git-repo-check"];
+    if (onLine && effort) args.push("-c", `model_reasoning_effort=${effort === "low" ? "low" : "medium"}`);
     if (custom) args.push("-c", "model_provider=kclip", "-c", "model_providers.kclip.name=kclip", "-c", `model_providers.kclip.base_url=${custom.baseUrl}`, "-c", "model_providers.kclip.env_key=KCLIP_API_KEY", "-c", "model_providers.kclip.wire_api=responses");
     if (custom?.model) args.push("-m", custom.model);
-    if (onLine) args.push("-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true", "--add-dir", cfg.skill, "--add-dir", cfg.skillModules);
-    else args.push("-s", "read-only", "--ephemeral", "-c", "model_reasoning_effort=low");
+    // 始终套沙箱：做视频只能写作品自己的文件夹（cwd），纯文字任务只读。
+    // Windows 上不指定沙箱实现时 workspace-write 会退化成只读（写文件报 blocked by policy），unelevated 才可写。
+    // 沙箱里 node 起不了子进程，渲染等固定命令由服务代跑（见 HELPERS）；联网只为访问本机工作台和查资料
+    if (process.platform === "win32") args.push("-c", "windows.sandbox=unelevated");
+    if (onLine) args.push("-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true");
+    else args.push("-s", "read-only", "-c", "model_reasoning_effort=low");
+    args.push("--ephemeral"); // 不在 C:\Users\…\.codex\sessions 留对话记录
     if (web) args.push("-c", "web_search=live");
     args.push("-"); // 提示词走 stdin
-    const p = spawn("codex", args, { cwd, shell: true, windowsHide: true, env: custom ? { ...BASE_ENV, KCLIP_API_KEY: custom.apiKey } : BASE_ENV });
+    const p = spawn("codex", args, { cwd, shell: true, windowsHide: true, env: withTmp(custom ? { ...BASE_ENV, KCLIP_API_KEY: custom.apiKey } : BASE_ENV, onLine ? cwd : path.join(JOBS, "_tmp")) });
     onSpawn?.(p);
     p.stdin.end(prompt);
-    let buf = "", text = "", failure = "", errOut = "", raw = "";
+    let buf = "", text = "", failure = "", lastError = "", completed = false, errOut = "", raw = "";
     const onEvent = (line) => {
       raw += line + "\n";
       onLine?.(line);
       try {
         const ev = JSON.parse(line);
         if (ev.type === "item.completed" && ev.item?.type === "agent_message") text = ev.item.text;
+        // 网络抖动时 Codex 会发 error 事件「Reconnecting... n/5」然后自己重连，不算失败；只有整轮失败才算
         if (ev.type === "turn.failed") failure = ev.error?.message || "Codex 调用失败";
-        if (ev.type === "error") failure = ev.message || "Codex 调用失败";
+        if (ev.type === "error" && !/Reconnecting/i.test(ev.message || "")) lastError = ev.message || "Codex 调用失败";
+        if (ev.type === "turn.completed") completed = true;
       } catch {}
     };
     p.stdout.on("data", (d) => {
@@ -477,7 +529,11 @@ const runCodex = (prompt, { cwd = ROOT, onLine, web, onSpawn } = {}) =>
       while ((i = buf.indexOf("\n")) >= 0) { onEvent(buf.slice(0, i)); buf = buf.slice(i + 1); }
     });
     p.stderr.on("data", (d) => { errOut += d; onLine?.(JSON.stringify({ type: "stderr", text: String(d) })); });
-    p.on("close", (code) => (code === 0 && !failure ? res(JSON.stringify({ result: text, is_error: false, ...(web ? { raw } : {}) })) : rej(new Error(`codex exit ${code}: ${(failure || errOut).slice(-500)}`))));
+    p.on("close", (code) => {
+      if (!completed && !failure) failure = lastError;
+      if (code === 0 && !failure) res(JSON.stringify({ result: text, is_error: false, ...(web ? { raw } : {}) }));
+      else rej(new Error(`codex exit ${code}: ${(failure || errOut).slice(-500)}`));
+    });
   });
 const agent = (prompt, opts) => (auth.engine === "codex" ? runCodex(prompt, opts) : runClaude(prompt, opts));
 
@@ -520,6 +576,43 @@ async function recommend(cats) {
 const jobs = []; // {id, url, title, coverStyle, status, steps, last, dir, outputs, error}
 let busy = false;
 let current = null; // { id, proc } 正在跑的那条，取消时连子进程树一起结束
+
+// Codex 在沙箱里只能改作品自己的文件夹，而且沙箱里 node 起不了子进程（ffmpeg、Remotion 的浏览器都 EPERM）。
+// 这几条固定命令由服务在作品文件夹里代跑：AI 只能按名字请求白名单里的命令，不能自己拼任意命令
+const HELPERS = {
+  crop: { stage: 2, run: () => ["node", ["scripts/detect-crop.mjs", "original.mp4"]], for: "node scripts/detect-crop.mjs original.mp4" },
+  ocr: { stage: 2, run: () => ["node", ["scripts/burned-subs.mjs", "public/clip.mp4", "audio16k.json", "data/burned.json"]], for: "node scripts/burned-subs.mjs public/clip.mp4 audio16k.json data/burned.json" },
+  frame: { stage: 3, run: (q) => ["npx", ["remotion", "still", "src/index.ts", "Kim", "work/f.png", `--frame=${Math.max(0, parseInt(q.get("frame"), 10) || 0)}`, "--log=error"]], for: "npx remotion still src/index.ts Kim work/f.png --frame=N（N 填帧号）", arg: "&frame=N" },
+  render: { stage: 3, run: () => ["npx", ["remotion", "render", "src/index.ts", "Kim", "out/成片.mp4", "--codec=h264", "--crf=16", "--audio-codec=aac", "--audio-bitrate=256k", "--log=error"]], for: "npx remotion render src/index.ts Kim out/成片.mp4 …（整片渲染）" },
+  cover: { stage: 4, run: () => ["npx", ["remotion", "still", "src/index.ts", "Cover", "out/封面_3比4.png", "--log=error"]], for: "npx remotion still src/index.ts Cover out/封面_3比4.png" },
+  srt: { stage: 5, run: () => ["npm", ["run", "srt"]], for: "npm run srt" },
+  pack: { stage: 5, run: () => ["npm", ["run", "pack"]], for: "npm run pack" },
+};
+const helperProcs = new Map(); // 作品 id → 正在代跑的进程，取消时一起结束
+const helperBase = (j) => `http://127.0.0.1:${PORT}/api/helper?id=${encodeURIComponent(j.id)}&token=${j.helperToken}&cmd=`;
+const helperNote = (j) => `
+- 你在沙箱里运行：只能改当前目录里的文件，不要试图改别的地方。ffmpeg、ffprobe、whisper-cli 直接在命令行跑没问题；但 node 脚本不能启动其他程序（会报 EPERM），所以下面这些命令不要自己跑，改用 curl 请工作台代跑（会等它跑完，返回退出码和输出）：
+${Object.entries(HELPERS).map(([k, h]) => `  ${h.for} → curl.exe -s "${helperBase(j)}${k}${h.arg || ""}"`).join("\n")}
+  不在这个清单里、又需要 node 启动其他程序的事，改成直接用 ffmpeg 命令行做。`;
+function runHelper(j, name, q) {
+  const h = HELPERS[name];
+  if (!h) throw new Error(`没有这个命令：${name}`);
+  const [cmd, args] = h.run(q);
+  j.last = `工作台代跑：${h.for}`;
+  if (h.stage > (j.stage ?? -1)) j.stage = h.stage;
+  j.steps++;
+  return new Promise((res) => {
+    const p = spawn(cmd, args.map((a) => (/[\s&|<>^]/.test(a) ? `"${a}"` : a)), { cwd: j.dir, shell: true, windowsHide: true, env: withTmp(BASE_ENV, j.dir) });
+    helperProcs.set(j.id, p);
+    let out = "";
+    const add = (d) => { out = (out + d).slice(-6000); };
+    p.stdout.on("data", add);
+    p.stderr.on("data", add);
+    const timer = setTimeout(() => killTree(p), 30 * 60 * 1000);
+    p.on("close", (code) => { clearTimeout(timer); helperProcs.delete(j.id); res(`exit=${code}\n${out.trim().slice(-3500)}`); });
+    p.on("error", (e) => { clearTimeout(timer); res(`exit=-1\n${e.message}`); });
+  });
+}
 const killTree = (proc) => {
   if (!proc?.pid) return;
   if (process.platform === "win32") execFile("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { windowsHide: true }, () => {});
@@ -529,7 +622,7 @@ function cancelJob(id) {
   const j = jobs.find((x) => x.id === id);
   if (!j) return;
   if (j.status === "queued") jobs.splice(jobs.indexOf(j), 1);
-  else if (j.status === "running") { j.cancelled = true; if (current?.id === id) killTree(current.proc); }
+  else if (j.status === "running") { j.cancelled = true; if (current?.id === id) killTree(current.proc); killTree(helperProcs.get(id)); }
   saveJobs();
 }
 // 删除不是真删：文件夹挪到 jobs/_trash，后悔了还能找回来
@@ -577,12 +670,12 @@ function revisePrompt(j) {
   const cmds = [];
   if (video) cmds.push("npx remotion render src/index.ts Kim out/成片.mp4 --codec=h264 --crf=16 --audio-codec=aac --audio-bitrate=256k --log=error", "npm run pack");
   if (video || list.includes("cover")) cmds.push(REVISE_SCOPES.cover.run);
-  return `这是一个已经做好的小红书双语字幕视频工程（当前目录）。用户看了成片，提出修改意见：
+  return `这是一个已经做好的小红书双语字幕视频工程（当前目录）。用户看了成片，${j.revision.big ? "和你在对话里确认了下面的修改方案" : "提出修改意见"}：
 「${text}」
 
 只做局部修改，省 token：
 - 不要读 SKILL.md，不要重新下载视频、不要重新转写/听写、不要重建工程或复制模板，已有的素材和文件全部沿用。
-- ${list.length ? `只看、只改这些文件：\n${files}` : "先判断意见对应哪个文件，只读那个文件里相关的部分，改完即止。"}
+- ${list.length ? `先看这些文件（这是按意见初步判断的范围）：\n${files}\n- 以意见文字为准：如果意见明显要改的是清单外的东西，就改那里，并照下面规则决定要不要重渲染。` : "先判断意见对应哪个文件，只读那个文件里相关的部分，改完即止。"}
 - 用 Grep 定位要改的地方，不要整个读大文件；不要动和这条意见无关的内容。
 - ${cmds.length ? `改完按顺序只跑这些命令：\n${cmds.map((c) => `  ${c}`).join("\n")}` : list.length ? "不需要重新渲染视频，改完文件就结束。" : "如果改了 src/ 下影响画面的文件，跑 npx remotion render src/index.ts Kim out/成片.mp4 --codec=h264 --crf=16 --audio-codec=aac --audio-bitrate=256k --log=error；改了封面就跑 " + REVISE_SCOPES.cover.run + "；只改文案就不渲染。"}
 - 全自动，不要提问；写脚本用 node，不要用 python。
@@ -598,18 +691,96 @@ function snapshotOutputs(j) {
   return dest;
 }
 
-function reviseJob({ id, text, scopes }) {
+// 改哪块以意见文字为准，勾选只作参考（用户常点错）：先关键词，认不出再问小模型，都不行才用勾选
+const SCOPE_KEYS = Object.keys(REVISE_SCOPES);
+async function resolveScopes(text, picked = []) {
+  const kw = reviseScopes(text);
+  // 关键词和勾选一致（或没勾）就直接用，不花钱；对不上、或关键词认不出时才问小模型
+  const same = kw.length && (!picked.length || (kw.length === picked.length && kw.every((k) => picked.includes(k))));
+  if (same) return { scopes: kw, by: "keyword" };
+  try {
+    const o = JSON.parse(await agent(`把这条短视频修改意见归类，判断要改哪几块。可选：caption=小红书文案/标题/话题，cover=封面，subs=字幕内容或翻译或时间，style=画面上字的颜色字体大小位置，cut=剪辑时长片段。
+用户界面上勾了：${picked.join(",") || "无"}；关键词粗判是：${kw.join(",") || "无"}。两者都可能错，只作参考，以意见文字的真实意思为准（比如「结尾补一句关注我」多半是文案，「这句翻译错了」是字幕）。
+意见：「${text}」
+只输出 JSON 数组，比如 ["subs"]；看不出来就输出 []。`, { model: "sonnet", effort: "low" }));
+    const t = o.result || "";
+    const arr = JSON.parse(t.slice(t.indexOf("["), t.lastIndexOf("]") + 1)).filter((k) => SCOPE_KEYS.includes(k));
+    if (arr.length) return { scopes: arr, by: "ai" };
+  } catch {}
+  return kw.length ? { scopes: kw, by: "keyword" } : { scopes: picked.filter((k) => SCOPE_KEYS.includes(k)), by: "picked" };
+}
+
+async function reviseJob({ id, text, scopes, big }) {
   const j = jobs.find((x) => x.id === id);
   if (!j || j.status !== "done") throw new Error("只有做好的成片才能修改");
   if (j.id.startsWith("tpl-")) throw new Error("模板作品请在模板编辑器里改");
-  const t = String(text || "").trim().slice(0, 1000);
+  const t = String(text || "").trim().slice(0, big ? 4000 : 1000);
   if (!t) throw new Error("写一下要改什么");
-  const valid = (Array.isArray(scopes) ? scopes : reviseScopes(t)).filter((k) => REVISE_SCOPES[k]);
+  const picked = (Array.isArray(scopes) ? scopes : []).filter((k) => REVISE_SCOPES[k]);
+  const { scopes: valid, by } = big ? { scopes: picked, by: "chat" } : await resolveScopes(t, picked);
+  if (j.status !== "done") throw new Error("这条已经在改了");
   const backup = snapshotOutputs(j);
-  j.revision = { text: t, scopes: valid, backup, at: Date.now() };
+  j.revision = { text: t, scopes: valid, by, big: !!big, backup, at: Date.now() };
   Object.assign(j, { status: "queued", steps: 0, stage: -1, last: "排队修改中", error: undefined });
   saveJobs();
   pump();
+}
+
+// 大改用对话：AI 只读不动文件，先说它的理解和打算；用户点「同意」后才把方案交给 reviseJob 去改
+const readSafe = (f, n) => { try { return readFileSync(f, "utf8").slice(0, n); } catch { return ""; } };
+async function chatJob({ id, text }) {
+  const j = jobs.find((x) => x.id === id);
+  if (!j || j.status !== "done") throw new Error("只有做好的成片才能对话修改");
+  const t = String(text || "").trim().slice(0, 2000);
+  if (!t) throw new Error("说一下想怎么改");
+  const chat = (j.chat ||= []);
+  chat.push({ role: "user", text: t, at: Date.now() });
+  const out = path.join(j.dir, "out");
+  const srt = readSafe(path.join(out, "双语字幕.srt"), 5000);
+  const conf = readSafe(path.join(j.dir, "src", "config.ts"), 2500);
+  const history = chat.slice(-12).map((m) => `${m.role === "user" ? "用户" : "你"}：${m.text}`).join("\n");
+  const prompt = `你是小红书双语字幕短视频的剪辑负责人，正在和用户商量怎么修改一条已经做好的成片。现在只讨论，不动任何文件。
+工程里可改的部分：caption=out/小红书文案.txt；cover=封面(src/Cover.tsx、COVER_ 常量)；subs=字幕(src/cues.ts，每条有时间、韩文、中文)；style=画面上字的颜色字体大小位置(src/config.ts)；cut=剪辑时长片段(config.ts 时间常量、cues.ts 时间)。改字幕/样式/剪辑要重渲染视频（几分钟），只改文案或封面很快。
+
+作品标题：${j.title || ""}
+双语字幕（节选）：
+${srt || "（没有）"}
+src/config.ts（节选）：
+${conf || "（没有）"}
+小红书文案（节选）：
+${readSafe(path.join(out, "小红书文案.txt"), 1200) || "（没有）"}
+
+对话记录：
+${history}
+
+请用中文回复用户，口语、简短：
+1. 先一两句复述你理解的需求；
+2. 再分条说打算怎么改（改哪块、具体改成什么、要不要重渲染）；
+3. 需求不清楚就只问一个最关键的问题，先不给方案。
+最后单独一行输出（用户看不到这一行）：
+PLAN_JSON {"ready":true或false,"plan":"交给执行者的完整修改方案，写清每处改成什么","scopes":["caption","cover","subs","style","cut" 里需要的几个]}`;
+  let o;
+  try { o = JSON.parse(await agent(prompt, { model: "sonnet", effort: "low" })); }
+  catch (e) { chat.pop(); throw e; }
+  if (o.is_error) { chat.pop(); throw new Error(o.result || "AI 调用失败"); }
+  const raw = o.result || "";
+  const at = raw.lastIndexOf("PLAN_JSON");
+  let plan = null;
+  if (at >= 0) try { const s = raw.slice(at); plan = JSON.parse(s.slice(s.indexOf("{"), s.lastIndexOf("}") + 1)); } catch {}
+  const reply = (at >= 0 ? raw.slice(0, at) : raw).trim();
+  chat.push({ role: "ai", text: reply, at: Date.now(), ...(plan?.ready && plan.plan ? { plan: String(plan.plan), scopes: (plan.scopes || []).filter((k) => SCOPE_KEYS.includes(k)) } : {}) });
+  saveJobs();
+  return chat;
+}
+async function approveChat({ id }) {
+  const j = jobs.find((x) => x.id === id);
+  const m = [...(j?.chat || [])].reverse().find((x) => x.role === "ai");
+  if (!m?.plan) throw new Error("AI 还没给出可以执行的方案");
+  const asked = j.chat.filter((x) => x.role === "user").map((x) => x.text).join("；");
+  await reviseJob({ id, text: `${m.plan}\n（用户在对话里的原话：${asked.slice(0, 1200)}）`, scopes: m.scopes, big: true });
+  m.approved = true;
+  j.chat.push({ role: "sys", text: "已同意，开始修改", at: Date.now() });
+  saveJobs();
 }
 
 async function pump() {
@@ -629,8 +800,27 @@ async function pump() {
       if (st && st[1] > (j.stage ?? -1)) j.stage = st[1];
     };
     const rev = j.revision;
-    const light = rev && rev.scopes.length && rev.scopes.every((k) => k === "caption" || k === "cover");
-    await agent(rev ? revisePrompt(j) : jobPrompt(j), {
+    // Codex 的 Windows 沙箱里 yt-dlp（PyInstaller 单文件版）解压临时文件会失败，所以由服务先下好原片再交给它
+    let predownloaded = false;
+    if (!rev && auth.engine === "codex") {
+      const orig = path.join(j.dir, "original.mp4");
+      if (!existsSync(orig)) {
+        j.last = "下载原片"; j.stage = 0; saveJobs();
+        await new Promise((ok, bad) => {
+          const p = spawn(needYtdlp(), ["-f", "bv*[height>=1080]+ba/b", "--merge-output-format", "mp4", "-o", "original.mp4", "--no-playlist", j.url], { cwd: j.dir, windowsHide: true, env: withTmp(BASE_ENV, j.dir) });
+          current = { id: j.id, proc: p };
+          let err = "";
+          p.stderr.on("data", (d) => { err = (err + d).slice(-400); });
+          p.on("error", bad);
+          p.on("close", (c) => (c === 0 && existsSync(orig) ? ok() : bad(new Error(`下载原片失败：${err.trim() || c}`))));
+        });
+      }
+      predownloaded = true;
+    }
+    const codex = auth.engine === "codex";
+    if (codex) j.helperToken = randomUUID();
+    const light =rev && rev.scopes.length && rev.scopes.every((k) => k === "caption" || k === "cover");
+    await agent((rev ? revisePrompt(j) : jobPrompt(j) + (predownloaded ? "\n- 视频已经下载好，就是当前目录的 original.mp4：跳过下载那一步，不要再运行 yt-dlp，直接从第 2 步开始。" : "")) + (codex ? helperNote(j) : ""), {
       cwd: j.dir,
       ...(rev ? { model: rev.scopes.length === 1 && rev.scopes[0] === "caption" ? "sonnet" : undefined, effort: light ? "low" : "medium" } : {}),
       onSpawn: (proc) => { current = { id: j.id, proc }; },
@@ -664,12 +854,14 @@ async function pump() {
     const ok = j.status === "done";
     const out = path.join(j.dir, "out");
     if (!ok) for (const f of ["成片.mp4", "封面_3比4.png", "小红书文案.txt", "summary.json"]) if (existsSync(path.join(r.backup, f))) try { copyFileSync(path.join(r.backup, f), path.join(out, f)); } catch {}
-    (j.revisions ||= []).push({ text: r.text, scopes: r.scopes, at: r.at, ok, note: ok ? j.last : j.error, backup: r.backup });
+    (j.revisions ||= []).push({ text: r.text, scopes: r.scopes, by: r.by, big: r.big, at: r.at, ok, note: ok ? j.last : j.error, backup: r.backup });
     if (existsSync(path.join(out, "成片.mp4"))) { j.status = "done"; j.error = undefined; }
     j.checked = false;
     delete j.revision;
   }
   current = null;
+  delete j.helperToken;
+  try { rmSync(path.join(j.dir, "work", "tmp"), { recursive: true, force: true }); } catch {}
   j.finishedAt = Date.now();
   saveJobs();
   busy = false;
@@ -771,6 +963,49 @@ http
       if (u.pathname === "/api/setup" && req.method === "POST") { const { key, value } = await body(req); cfg.set(key, value); health.at = 0; return send(res, 200, { platform: cfg.platform, dataDir: JOBS, items: cfg.checks() }); }
       if (u.pathname === "/api/resolve") return send(res, 200, await resolveLink(u.searchParams.get("url") || ""));
       if (u.pathname === "/api/jobs/cancel" && req.method === "POST") { cancelJob((await body(req)).id); return send(res, 200, { ok: true }); }
+      if (u.pathname === "/api/helper") {
+        // 只给正在制作的那条用，凭这次制作的一次性 token；别的网页、别的作品都调不动
+        const j = jobs.find((x) => x.id === u.searchParams.get("id"));
+        if (!j || j.status !== "running" || current?.id !== j.id || !j.helperToken || u.searchParams.get("token") !== j.helperToken) return send(res, 403, { error: "不允许" });
+        const text = await runHelper(j, u.searchParams.get("cmd") || "", u.searchParams);
+        res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+        return res.end(text);
+      }
+      if (u.pathname === "/api/caption" && req.method === "POST") {
+        const { id, text } = await body(req);
+        const j = jobs.find((x) => x.id === id);
+        if (!j?.dir || typeof text !== "string") throw new Error("找不到这条作品");
+        const out = path.join(j.dir, "out");
+        mkdirSync(out, { recursive: true });
+        writeFileSync(path.join(out, "小红书文案.txt"), text.replace(/\r\n/g, "\n"));
+        return send(res, 200, { ok: true });
+      }
+      if (u.pathname === "/api/caption-check" && req.method === "POST") {
+        const { id, text } = await body(req);
+        const j = jobs.find((x) => x.id === id);
+        if (!j?.dir || typeof text !== "string" || !text.trim()) throw new Error("文案是空的");
+        let srt = "";
+        try { srt = readFileSync(path.join(j.dir, "out", "双语字幕.srt"), "utf8").replace(/^\d+\r?\n[\d:,]+ --> [\d:,]+\r?\n/gm, "").slice(0, 6000); } catch {}
+        const prompt = `你是小红书"韩语学习"账号的文案校对。检查下面这篇小红书文案，只找真正的问题：
+1. 中文错别字、病句、标点错误
+2. 韩语拼写、띄어쓰기、语法错误；韩语单词的中文释义或例句翻译不准确
+3. 引用的台词和视频字幕对不上（字幕见下方）
+4. 小红书违禁/限流词（如"最""第一"等绝对化用语、引流、站外平台名）
+不要改写风格，不要挑没问题的地方，不要加原作者出处或"侵删"之类的话。
+只输出 JSON，不要其他文字；字符串里不要用英文双引号，引用请用「」：
+{"issues":[{"where":"原文里有问题的片段","problem":"问题是什么（一句话）","fix":"改成什么"}],"revised":"把所有问题改好后的完整文案（没有问题就原样返回）"}
+
+文案：
+${text}
+
+视频双语字幕：
+${srt || "（没有）"}`;
+        const o = JSON.parse(await agent(prompt, { model: "sonnet", effort: "low" }));
+        if (o.is_error) throw new Error(o.result || "AI 调用失败");
+        const t = o.result || "";
+        const r = JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1));
+        return send(res, 200, { issues: Array.isArray(r.issues) ? r.issues : [], revised: typeof r.revised === "string" ? r.revised : text });
+      }
       if (u.pathname === "/api/jobs/delete" && req.method === "POST") { deleteJob((await body(req)).id); return send(res, 200, { ok: true }); }
       if (u.pathname === "/api/open" && req.method === "POST") {
         const { id } = await body(req);
@@ -783,13 +1018,17 @@ http
       }
       if (u.pathname === "/api/revise-scopes") return send(res, 200, reviseScopes(u.searchParams.get("text") || ""));
       if (u.pathname === "/api/health") return send(res, 200, await getHealth(u.searchParams.has("fresh")));
+      if (u.pathname === "/api/login" && req.method === "POST") { startLogin(); return send(res, 200, { ok: true }); }
       if (u.pathname === "/api/auth-mode" && req.method === "POST") { setRoute(await body(req)); return send(res, 200, await getHealth()); }
       if (u.pathname === "/api/apis" && req.method === "POST") { addApi(await body(req)); return send(res, 200, await getHealth()); }
       if (u.pathname === "/api/apis/delete" && req.method === "POST") { removeApi((await body(req)).id); return send(res, 200, await getHealth()); }
       if (u.pathname === "/api/search") return send(res, 200, await withRealThumbs(await search(u.searchParams.get("q") || "")));
       if (u.pathname === "/api/picks") { try { const saved = JSON.parse(readFileSync(path.join(JOBS, "picks.json"), "utf8")); return send(res, 200, { ...saved, picks: await withRealThumbs(saved.picks) }); } catch { return send(res, 200, { picks: [] }); } }
       if (u.pathname === "/api/retry" && req.method === "POST") { const { id } = await body(req); const j = jobs.find((x) => x.id === id); if (j && j.status === "failed") { Object.assign(j, { status: "queued", error: undefined, steps: 0, stage: -1, last: "排队中" }); saveJobs(); pump(); } return send(res, 200, { ok: true }); }
-      if (u.pathname === "/api/revise" && req.method === "POST") { reviseJob(await body(req)); return send(res, 200, { ok: true }); }
+      if (u.pathname === "/api/revise" && req.method === "POST") { await reviseJob(await body(req)); return send(res, 200, { ok: true }); }
+      if (u.pathname === "/api/chat" && req.method === "POST") return send(res, 200, await chatJob(await body(req)));
+      if (u.pathname === "/api/chat/approve" && req.method === "POST") { await approveChat(await body(req)); return send(res, 200, { ok: true }); }
+      if (u.pathname === "/api/chat/clear" && req.method === "POST") { const { id } = await body(req); const j = jobs.find((x) => x.id === id); if (j) { j.chat = []; saveJobs(); } return send(res, 200, []); }
       if (u.pathname === "/api/checked" && req.method === "POST") { const { id } = await body(req); const j = jobs.find((x) => x.id === id); if (j) { j.checked = true; saveJobs(); } return send(res, 200, { ok: true }); }
       if (u.pathname === "/api/buzz") return send(res, 200, (await buzz()).topics);
       if (u.pathname === "/api/trending") return send(res, 200, (await melonHot()).slice(0, 16).map((a) => ({ tag: a.name, query: a.query, views: a.score, best: a.best, songs: a.songs })));

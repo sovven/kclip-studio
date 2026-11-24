@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
-  AlertTriangle, Check, Clapperboard, Compass, Copy, Download, Eye, FileArchive, Film, FolderOpen, GripVertical, LayoutTemplate, Library, Link2, Loader2,
-  Monitor, Moon, MoreHorizontal, PenLine, Play, Plus, RotateCw, Search, Settings2, Sparkles, Sun, Trash2, Wrench, X,
+  AlertTriangle, Check, Clapperboard, Compass, Copy, Download, Eye, FileArchive, Film, FolderOpen, GripVertical, LayoutTemplate, Library, Link2, Loader2, LogIn,
+  MessageSquare, Monitor, Moon, MoreHorizontal, PenLine, Send, Play, Plus, RotateCw, Search, Settings2, Sparkles, Sun, Trash2, Wrench, X,
 } from "lucide-react";
 import { Dialog } from "radix-ui";
 import { toast } from "sonner";
@@ -23,7 +23,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { TemplatePage } from "@/template/TemplatePage";
-import { ALL, useStudio, type Engine, type SetupItem, type CoverStyle, type Draft, type Job, type Page, type Theme, type Video } from "@/store";
+import { ALL, post, useStudio, type Engine, type SetupItem, type CaptionCheck, type ChatMsg, type CoverStyle, type Draft, type Job, type Page, type Theme, type Video } from "@/store";
 
 const COVER: Record<CoverStyle, { label: string; hint: string }> = {
   band: { label: "黑底大标题", hint: "外研社同款，稳" },
@@ -920,14 +920,14 @@ function ReviseBox({ j, onSent }: { j: Job; onSent: () => void }) {
       <div className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold"><PenLine className="size-3.5" /> 修改意见</div>
       <Textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="比如：第 3 句中文翻错了，应该是“我们连生日都不过”；封面字再大一点" className="min-h-16 rounded-xl text-[13px]" onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && text.trim()) send(); }} />
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <span className="text-[11px] text-muted-foreground">只改：</span>
+        <span className="text-[11px] text-muted-foreground" title="AI 以你写的文字为准，勾选只作参考">参考：</span>
         {Object.keys(REVISE_LABEL).map((k) => (
           <button key={k} onClick={() => toggle(k)} title={REVISE_COST[k]} className={cn("rounded-full px-2 py-0.5 text-[11px]", scopes.includes(k) ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground")}>{REVISE_LABEL[k]}</button>
         ))}
         <Button size="xs" className="ml-auto rounded-full" disabled={!text.trim() || sending} onClick={send}>{sending ? <Loader2 className="animate-spin" /> : <RotateCw />} 按意见重做</Button>
       </div>
       <div className="mt-1.5 text-[11px] text-muted-foreground">
-        {text.trim() ? (scopes.length ? scopes.map((k) => REVISE_COST[k]).join(" · ") : "没认出改哪块，AI 会先找对应文件再改（稍贵）") : "不会重新下载和听写，只动相关文件；改之前自动备份旧版"}
+        {text.trim() ? `${scopes.length ? scopes.map((k) => REVISE_COST[k]).join(" · ") : "没认出改哪块，AI 会先判断再改"} · 以你写的文字为准` : "小问题写这里；大改点上面「对话」先和 AI 商量。不会重新下载和听写，改前自动备份"}
       </div>
       {history.length > 0 && (
         <ul className="mt-2 space-y-1 border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
@@ -940,16 +940,163 @@ function ReviseBox({ j, onSent }: { j: Job; onSent: () => void }) {
   );
 }
 
+// 文案：点铅笔进入编辑，直接打字；保存写回 out/小红书文案.txt，打包和复制都用改过的。「AI 检查」只挑错，给出修改建议，点「全部采用」才替换
+function CaptionEditor({ j, caption }: { j: Job; caption: string }) {
+  const { saveCaption, checkCaption } = useStudio();
+  const [text, setText] = useState(caption);
+  const [saved, setSaved] = useState(caption);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [check, setCheck] = useState<CaptionCheck | null>(null);
+  useEffect(() => { setText(caption); setSaved(caption); setEditing(false); setCheck(null); }, [j.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const dirty = text !== saved;
+  const save = async (t = text) => {
+    if (t === saved || saving) return true;
+    setSaving(true);
+    const ok = await saveCaption(j.id, t);
+    if (ok) { setSaved(t); toast.success("文案已保存"); }
+    setSaving(false);
+    return ok;
+  };
+  const done = async () => { if (await save()) setEditing(false); };
+  const cancel = () => { setText(saved); setEditing(false); };
+  const runCheck = async () => {
+    setChecking(true); setCheck(null);
+    const r = await checkCaption(j.id, text);
+    setChecking(false);
+    if (!r) return;
+    if (!r.issues.length) { toast.success("AI 检查完了，没发现问题"); return; }
+    setCheck(r);
+  };
+  const adopt = async () => { if (!check) return; setText(check.revised); setCheck(null); await save(check.revised); };
+  return (
+    <div className="flex shrink-0 flex-col">
+      <div className="mb-1.5 flex items-center gap-2 text-sm font-semibold">
+        小红书文案
+        {editing && <span className="text-xs font-normal text-muted-foreground">{saving ? "保存中…" : dirty ? "未保存 · Ctrl+S 保存" : "编辑中"}</span>}
+        <div className="ml-auto flex gap-1.5">
+          {editing ? (
+            <>
+              <Button size="xs" variant="ghost" className="rounded-full" onClick={cancel} disabled={saving}>取消</Button>
+              <Button size="xs" className="rounded-full" onClick={done} disabled={saving}><Check /> 完成</Button>
+            </>
+          ) : (
+            <>
+              {text.trim() && <Button size="xs" variant="secondary" className="rounded-full" onClick={runCheck} disabled={checking}>{checking ? <Loader2 className="animate-spin" /> : <Sparkles />} {checking ? "检查中…" : "AI 检查"}</Button>}
+              {text && <Button size="xs" variant="secondary" className="rounded-full" onClick={() => copyCaption(text)}><Copy /> 复制</Button>}
+              <Button size="icon-xs" variant="secondary" className="rounded-full" aria-label="修改文案" title="修改文案" onClick={() => { setEditing(true); setCheck(null); }}><PenLine /></Button>
+            </>
+          )}
+        </div>
+      </div>
+      {editing ? (
+        <Textarea
+          autoFocus
+          aria-label="小红书文案"
+          value={text}
+          placeholder="在这里写文案"
+          onChange={(e) => setText(e.target.value)}
+          onBlur={(e) => { if (!e.relatedTarget?.closest("button")) save(); }}
+          onKeyDown={(e) => { if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); save(); } }}
+          className="field-sizing-fixed h-72 resize-y rounded-2xl bg-background p-3 text-[13px] leading-relaxed"
+        />
+      ) : (
+        <pre onDoubleClick={() => setEditing(true)} title="双击也可以修改" className="max-h-56 min-h-24 cursor-text overflow-y-auto whitespace-pre-wrap rounded-2xl bg-secondary/60 p-3 font-sans text-[13px] leading-relaxed">{text || "这条没有文案，点右上角铅笔写一段"}</pre>
+      )}
+      {check && (
+        <div className="mt-2 rounded-2xl border p-3 text-xs leading-relaxed">
+          <div className="mb-2 flex items-center gap-1 font-semibold"><Sparkles className="size-3.5 text-primary" /> AI 发现 {check.issues.length} 处可以改</div>
+          <ul className="space-y-2">
+            {check.issues.map((it, i) => (
+              <li key={i}>
+                <span className="rounded bg-destructive/10 px-1 text-destructive line-through">{it.where}</span>
+                <span className="mx-1 text-muted-foreground">→</span>
+                <span className="rounded bg-primary/10 px-1">{it.fix}</span>
+                <div className="mt-0.5 text-muted-foreground">{it.problem}</div>
+              </li>
+            ))}
+          </ul>
+          <div className="mt-3 flex gap-1.5">
+            <Button size="xs" className="rounded-full" onClick={adopt} disabled={saving}><Check /> 全部采用</Button>
+            <Button size="xs" variant="secondary" className="rounded-full" onClick={() => { setText(check.revised); setCheck(null); setEditing(true); }}><PenLine /> 采用后再手改</Button>
+            <Button size="xs" variant="ghost" className="rounded-full" onClick={() => setCheck(null)}>不用了</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 大改的对话框：AI 只说理解和打算，不动文件；点「同意，开始改」才排队修改
+function ChatPanel({ j, onClose, onStarted }: { j: Job; onClose: () => void; onStarted: () => void }) {
+  const { pollJobs } = useStudio();
+  const [msgs, setMsgs] = useState<ChatMsg[]>(j.chat || []);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState<"" | "talk" | "go">("");
+  const end = useRef<HTMLDivElement>(null);
+  useEffect(() => { end.current?.scrollIntoView({ block: "end" }); }, [msgs, busy]);
+  const say = async () => {
+    const t = text.trim();
+    if (!t || busy) return;
+    setBusy("talk"); setText("");
+    setMsgs((m) => [...m, { role: "user", text: t, at: Date.now() }]);
+    try { setMsgs(await post<ChatMsg[]>("/api/chat", { id: j.id, text: t })); }
+    catch (e) { toast.error((e as Error).message); setMsgs((m) => m.slice(0, -1)); setText(t); }
+    setBusy("");
+  };
+  const approve = async () => {
+    setBusy("go");
+    try { await post("/api/chat/approve", { id: j.id }); toast.success("已同意，开始修改，在「制作」页看进度"); await pollJobs(); onStarted(); }
+    catch (e) { toast.error((e as Error).message); }
+    setBusy("");
+  };
+  const clear = async () => { setMsgs(await post<ChatMsg[]>("/api/chat/clear", { id: j.id }).catch(() => msgs)); };
+  const last = [...msgs].reverse().find((m) => m.role !== "user");
+  const canGo = last?.role === "ai" && !!last.plan && !last.approved;
+  return (
+    <div className="flex w-[340px] shrink-0 flex-col border-l border-border/70">
+      <div className="flex items-center gap-2 border-b border-border/70 px-4 py-3 text-sm font-semibold">
+        <MessageSquare className="size-4" /> 对话大改
+        {msgs.length > 0 && <button className="ml-auto text-xs font-normal text-muted-foreground hover:text-foreground" onClick={clear} disabled={!!busy}>清空</button>}
+        <button aria-label="收起对话" className={cn("grid size-7 place-items-center rounded-full text-muted-foreground hover:bg-secondary", !msgs.length && "ml-auto")} onClick={onClose}><X className="size-3.5" /></button>
+      </div>
+      <div className="flex-1 space-y-3 overflow-y-auto p-4 text-[13px] leading-relaxed">
+        {!msgs.length && <div className="text-xs text-muted-foreground">说说想怎么大改，比如「整体字幕太密，前 10 秒剪掉，标题换成更有冲击力的」。AI 会先讲它的理解和打算，你同意了才动手。</div>}
+        {msgs.map((m, i) => m.role === "sys" ? (
+          <div key={i} className="text-center text-[11px] text-muted-foreground">— {m.text} —</div>
+        ) : (
+          <div key={i} className={cn("max-w-[92%] whitespace-pre-wrap rounded-2xl px-3 py-2", m.role === "user" ? "ml-auto bg-primary text-primary-foreground" : "bg-secondary")}>
+            {m.text.replace(/\*\*|`/g, "")}
+            {m.plan && <div className="mt-1.5 text-[11px] opacity-70">要改：{(m.scopes || []).map((k) => REVISE_LABEL[k]).join("、") || "AI 判断"}{m.approved ? " · 已同意" : ""}</div>}
+          </div>
+        ))}
+        {busy === "talk" && <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" /> AI 在想怎么改…</div>}
+        <div ref={end} />
+      </div>
+      <div className="border-t border-border/70 p-3">
+        {canGo && <Button className="mb-2 w-full rounded-full" onClick={approve} disabled={!!busy}>{busy === "go" ? <Loader2 className="animate-spin" /> : <Check />} 同意，开始改</Button>}
+        <div className="flex items-end gap-1.5">
+          <Textarea value={text} onChange={(e) => setText(e.target.value)} placeholder={canGo ? "不对的话接着说…" : "想怎么改？"} className="min-h-10 rounded-xl text-[13px]" onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); say(); } }} />
+          <Button size="icon-sm" className="shrink-0 rounded-full" aria-label="发送" onClick={say} disabled={!text.trim() || !!busy}><Send /></Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // 在页面里直接看成片、对文案，不用跳新标签页
 function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
   const { deleteJob } = useStudio();
+  const [chat, setChat] = useState(!!j.chat?.length);
+  const canChat = !j.id.startsWith("tpl-");
   const o = j.outputs || {};
   const uncertain = o.summary?.uncertain || [];
   return (
     <Dialog.Root open onOpenChange={(open) => !open && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
-        <Dialog.Content aria-describedby={undefined} className="fixed left-1/2 top-1/2 z-50 flex max-h-[92vh] w-[min(880px,94vw)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-3xl bg-card shadow-2xl outline-none">
+        <Dialog.Content aria-describedby={undefined} className={cn("fixed left-1/2 top-1/2 z-50 flex max-h-[92vh] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-3xl bg-card shadow-2xl outline-none", chat ? "w-[min(1220px,96vw)]" : "w-[min(880px,94vw)]")}>
           <div className="grid shrink-0 place-items-center bg-black">
             {o.video ? <video src={o.video} poster={o.cover || undefined} controls autoPlay className="aspect-[9/16] h-[min(92vh,720px)]" /> : <div className="grid aspect-[9/16] h-[min(92vh,720px)] place-items-center text-white/50"><Film /></div>}
           </div>
@@ -959,6 +1106,7 @@ function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
                 <Dialog.Title className="text-lg font-semibold leading-snug tracking-tight">{jobTitle(j)}</Dialog.Title>
                 <div className="mt-1 text-xs text-muted-foreground">{jobDate(j)}{o.summary?.summary && ` · ${o.summary.summary}`}</div>
               </div>
+              {canChat && !chat && <Button size="xs" variant="secondary" className="mt-1 shrink-0 rounded-full" onClick={() => setChat(true)}><MessageSquare /> 对话大改</Button>}
               <Dialog.Close aria-label="关闭" className="grid size-8 shrink-0 place-items-center rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground"><X className="size-4" /></Dialog.Close>
             </div>
             {uncertain.length > 0 && (
@@ -967,10 +1115,7 @@ function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
                 <ul className="list-disc space-y-0.5 pl-4 text-muted-foreground">{uncertain.map((u, i) => <li key={i}>{u}</li>)}</ul>
               </div>
             )}
-            <div className="flex shrink-0 flex-col">
-              <div className="mb-1.5 flex items-center text-sm font-semibold">小红书文案{o.caption && <Button size="xs" variant="secondary" className="ml-auto rounded-full" onClick={() => copyCaption(o.caption!)}><Copy /> 复制</Button>}</div>
-              <pre className="max-h-56 min-h-24 overflow-y-auto whitespace-pre-wrap rounded-2xl bg-secondary/60 p-3 font-sans text-[13px] leading-relaxed">{o.caption || "这条没有文案"}</pre>
-            </div>
+            <CaptionEditor j={j} caption={o.caption || ""} />
             {!j.id.startsWith("tpl-") && <ReviseBox j={j} onSent={onClose} />}
             <div className="flex flex-wrap items-center gap-2">
               {o.video && <Button className="rounded-full" asChild><a href={`/api/pack?id=${encodeURIComponent(j.id)}`} download><Download /> 下载 zip</a></Button>}
@@ -979,6 +1124,7 @@ function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
               <Button variant="ghost" className="ml-auto rounded-full text-muted-foreground hover:text-destructive" onClick={() => { if (window.confirm("从作品库删除这条？文件会移到 jobs/_trash，需要时还能找回。")) { onClose(); setTimeout(() => deleteJob(j.id), 300); } }}><Trash2 /> 删除</Button>
             </div>
           </div>
+          {canChat && chat && <ChatPanel j={j} onClose={() => setChat(false)} onStarted={onClose} />}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
@@ -1041,7 +1187,7 @@ function LibraryPage() {
 
 /* ============ 根 ============ */
 export default function App() {
-  const { init, pollJobs, page, loggedIn, loginCmd, recheck, theme, setTheme } = useStudio();
+  const { init, pollJobs, page, loggedIn, loginCmd, recheck, login, loggingIn, theme, setTheme } = useStudio();
   useEffect(() => {
     init();
     const t = setInterval(pollJobs, 3000);
@@ -1063,9 +1209,10 @@ export default function App() {
           {loggedIn === false && (
             <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-[var(--warning)]/30 bg-[var(--warning)]/10 px-6 py-2 text-sm">
               <AlertTriangle className="size-4 shrink-0 text-[var(--warning)]" />
-              <span className="min-w-0 flex-1">AI 还没连上：选片和看作品照常能用，AI 精选和制作要先登录。打开终端粘贴登录命令，登录完点「重新检查」。</span>
-              <Button size="sm" variant="secondary" className="rounded-full" onClick={() => copyText(loginCmd).then(() => toast.success("登录命令已复制", { description: "打开终端（PowerShell）粘贴运行" })).catch(() => toast(loginCmd))}><Copy /> 复制登录命令</Button>
-              <Button size="sm" variant="secondary" className="rounded-full" onClick={recheck}><RotateCw /> 重新检查</Button>
+              <span className="min-w-0 flex-1">{loggingIn ? "已在浏览器打开登录页：点「授权 / Authorize」，完成后这里会自动连上。" : "AI 还没连上：选片和看作品照常能用，AI 精选和制作要先登录。点「一键登录」，在弹出的网页上授权就行。"}</span>
+              <Button size="sm" className="rounded-full" disabled={loggingIn} onClick={login}>{loggingIn ? <Loader2 className="animate-spin" /> : <LogIn />} {loggingIn ? "等待授权…" : "一键登录"}</Button>
+              <Button size="sm" variant="ghost" className="rounded-full" onClick={() => copyText(loginCmd).then(() => toast.success("登录命令已复制", { description: "打开终端（PowerShell）粘贴运行" })).catch(() => toast(loginCmd))}><Copy /> 复制命令</Button>
+              <Button size="sm" variant="ghost" className="rounded-full" onClick={recheck}><RotateCw /> 重新检查</Button>
             </div>
           )}
           <ScrollArea className="min-h-0 flex-1">
