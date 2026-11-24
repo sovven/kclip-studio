@@ -1125,7 +1125,7 @@ function CaptionEditor({ j, caption }: { j: Job; caption: string }) {
 
 // AI 对话修改：从右边展开的聊天面板。AI 只说理解和打算，不动文件；点「同意，开始改」才排队修改。
 // 消息以服务端为准（每 3 秒随作品列表同步）：关掉成片弹窗、切页面都不会断，AI 在后台想完照样显示
-function ChatPanel({ id, onStarted }: { id: string; onStarted?: () => void }) {
+function ChatPanel({ id, onStarted, className }: { id: string; onStarted?: () => void; className?: string }) {
   const { pollJobs, jobs, setDockChat, setDockMin } = useStudio();
   const j = jobs.find((x) => x.id === id);
   const [msgs, setMsgs] = useState<ChatMsg[]>(j?.chat || []);
@@ -1156,14 +1156,18 @@ function ChatPanel({ id, onStarted }: { id: string; onStarted?: () => void }) {
   const last = [...msgs].reverse().find((m) => m.role !== "user");
   const canGo = last?.role === "ai" && !!last.plan && !last.approved;
   const time = (t: number) => new Date(t).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-  const Avatar = () => <div className="grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-b from-[#3a3a3c] to-black text-[11px] font-bold text-white dark:from-white dark:to-[#d1d1d6] dark:text-black">K</div>;
+  const Avatar = ({ dot }: { dot?: boolean }) => (
+    <div className="relative grid size-7 shrink-0 place-items-center rounded-full bg-gradient-to-br from-[#5ac8fa] via-[#0a84ff] to-[#5e5ce6] text-[11px] font-bold text-white shadow-[0_2px_8px_-2px_rgba(10,132,255,0.6)]">
+      K{dot && <span className="absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full border-2 border-card bg-[#30d158]" />}
+    </div>
+  );
   return (
-    <div className="flex min-h-0 w-[360px] shrink-0 flex-col self-stretch border-l border-border/70 bg-card">
+    <motion.div initial={{ opacity: 0, y: 14, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={{ duration: 0.22, ease: [0.2, 0.8, 0.2, 1] }} className={cn("flex w-[380px] flex-col overflow-hidden rounded-2xl bg-card shadow-[0_24px_60px_-12px_rgba(0,0,0,0.35),0_0_0_1px_rgba(127,127,127,0.14)] dark:shadow-[0_24px_60px_-12px_rgba(0,0,0,0.7),0_0_0_1px_rgba(255,255,255,0.08)]", className)}>
       {/* 顶栏：像手机聊天的联系人栏 */}
-      <div className="flex items-center gap-2.5 border-b border-[#0a84ff]/15 bg-[#0a84ff]/[0.06] px-4 py-3">
-        <Avatar />
+      <div className="flex items-center gap-2.5 border-b border-border/60 bg-gradient-to-b from-[#0a84ff]/[0.07] to-transparent px-4 py-3">
+        <Avatar dot />
         <div className="min-w-0 flex-1 leading-tight">
-          <div className="text-sm font-semibold">AI 对话修改</div>
+          <div className="text-[13.5px] font-semibold tracking-tight">AI 对话修改</div>
           <div className="truncate text-[11px] text-muted-foreground">{thinking ? "正在输入…" : busy === "go" ? "开始修改…" : j.outputs?.summary?.title || j.title}</div>
         </div>
         {msgs.length > 0 && <button className="text-xs text-muted-foreground hover:text-foreground" onClick={clear} disabled={!!busy}>清空</button>}
@@ -1187,7 +1191,7 @@ function ChatPanel({ id, onStarted }: { id: string; onStarted?: () => void }) {
               {m.role === "sys" ? (
                 <div className="text-center"><span className="rounded-full bg-secondary px-2.5 py-0.5 text-[11px] text-muted-foreground">{m.text}</span></div>
               ) : m.role === "user" ? (
-                <div className="flex justify-end"><div className="max-w-[80%] whitespace-pre-wrap rounded-[18px] rounded-br-[6px] bg-[#0a84ff] px-3.5 py-2 text-white">{m.text}</div></div>
+                <div className="flex justify-end"><div className="max-w-[80%] whitespace-pre-wrap rounded-[18px] rounded-br-[6px] bg-gradient-to-b from-[#2f95ff] to-[#0a7aff] px-3.5 py-2 text-white shadow-[0_4px_14px_-6px_rgba(10,132,255,0.7)]">{m.text}</div></div>
               ) : (
                 <div className="flex items-end gap-2">
                   <Avatar />
@@ -1215,17 +1219,17 @@ function ChatPanel({ id, onStarted }: { id: string; onStarted?: () => void }) {
         {!msgs.length && !text && (
           <div className="mb-2.5 flex flex-wrap gap-1.5">
             {["标题换个更抓人的", "封面排版更好看一点", "字幕太密，删掉一些", "文案短一点、更有网感"].map((q) => (
-              <button key={q} onClick={() => setText(q)} className="rounded-full border border-[#0a84ff]/25 px-2.5 py-1 text-xs text-[#0a84ff] transition-colors hover:bg-[#0a84ff]/10">{q}</button>
+              <button key={q} onClick={() => setText(q)} className="rounded-full bg-[#0a84ff]/[0.08] px-2.5 py-1 text-xs text-[#0a84ff] transition-colors hover:bg-[#0a84ff]/15 dark:text-[#64b5ff]">{q}</button>
             ))}
           </div>
         )}
         {canGo && <Button className="mb-2 w-full rounded-full" onClick={approve} disabled={!!busy}>{busy === "go" ? <Loader2 className="animate-spin" /> : <Check />} 同意，开始改</Button>}
-        <div className="flex items-end gap-2 rounded-[22px] border border-border bg-card py-1 pl-4 pr-1">
+        <div className="flex items-end gap-2 rounded-[22px] border border-border/80 bg-secondary/40 py-1 pl-4 pr-1 transition-shadow focus-within:border-[#0a84ff]/50 focus-within:shadow-[0_0_0_4px_rgba(10,132,255,0.12)]">
           <textarea rows={1} value={text} onChange={(e) => setText(e.target.value)} placeholder={canGo ? "不对的话接着说…" : "发消息…"} className="max-h-28 min-h-8 flex-1 resize-none bg-transparent py-1.5 text-[14px] outline-none [field-sizing:content] placeholder:text-muted-foreground" onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); say(); } }} />
-          <button aria-label="发送" onClick={say} disabled={!text.trim() || !!busy} className="grid size-8 shrink-0 place-items-center rounded-full bg-[#0a84ff] text-white transition-opacity disabled:opacity-30"><Send className="size-4" /></button>
+          <button aria-label="发送" onClick={say} disabled={!text.trim() || !!busy} className="grid size-8 shrink-0 place-items-center rounded-full bg-gradient-to-b from-[#2f95ff] to-[#0a7aff] text-white shadow-[0_2px_8px_-2px_rgba(10,132,255,0.7)] transition-all active:scale-95 disabled:opacity-30 disabled:shadow-none"><Send className="size-4" /></button>
         </div>
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -1241,7 +1245,8 @@ function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
     <Dialog.Root open onOpenChange={(open) => !open && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
-        <Dialog.Content aria-describedby={undefined} className={cn("fixed left-1/2 top-1/2 z-50 flex max-h-[92vh] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-3xl bg-card shadow-2xl outline-none", chatOpen ? "w-[min(1240px,96vw)]" : "w-[min(880px,94vw)]")}>
+        <Dialog.Content aria-describedby={undefined} className="fixed left-1/2 top-1/2 z-50 flex max-h-[92vh] w-[min(880px,94vw)] -translate-x-1/2 -translate-y-1/2 rounded-3xl bg-card shadow-2xl outline-none">
+          <div className="flex min-h-0 w-full overflow-hidden rounded-3xl">
           <div className="grid shrink-0 place-items-center bg-black">
             {o.video ? <video src={o.video} poster={o.cover || undefined} controls autoPlay className="aspect-[9/16] h-[min(92vh,720px)]" /> : <div className="grid aspect-[9/16] h-[min(92vh,720px)] place-items-center text-white/50"><Film /></div>}
           </div>
@@ -1268,7 +1273,9 @@ function Viewer({ j, onClose }: { j: Job; onClose: () => void }) {
               <Button variant="ghost" className="ml-auto rounded-full text-muted-foreground hover:text-destructive" onClick={() => { if (window.confirm("从作品库删除这条？文件会移到 jobs/_trash，需要时还能找回。")) { onClose(); setTimeout(() => deleteJob(j.id), 300); } }}><Trash2 /> 删除</Button>
             </div>
           </div>
-          {chatOpen && <ChatPanel id={j.id} onStarted={onClose} />}
+          </div>
+          {/* 浮在弹窗右边（放不下时盖在弹窗右侧），不挤弹窗 */}
+          {chatOpen && <ChatPanel id={j.id} onStarted={onClose} className="absolute bottom-0 right-[calc(16px-min(412px,(100vw-100%)/2))] h-[min(620px,100%)]" />}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
@@ -1289,7 +1296,7 @@ function ChatDock() {
       </button>
     );
   }
-  return <aside className="flex h-screen shrink-0 border-l border-border/70 shadow-[-8px_0_24px_-16px_rgba(0,0,0,0.25)]"><ChatPanel id={dockChat} /></aside>;
+  return <ChatPanel id={dockChat} className="fixed bottom-5 right-5 z-40 h-[min(620px,calc(100vh-40px))]" />;
 }
 
 function WorkCard({ j, onOpen }: { j: Job; onOpen: () => void }) {
