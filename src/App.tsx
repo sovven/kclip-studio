@@ -26,10 +26,10 @@ import { TemplatePage } from "@/template/TemplatePage";
 import { ALL, post, useStudio, type Engine, type SetupItem, type CaptionCheck, type ChatMsg, type CoverStyle, type Draft, type Job, type Page, type Theme, type Video } from "@/store";
 
 const COVER: Record<CoverStyle, { label: string; hint: string }> = {
-  band: { label: "黑底大标题", hint: "外研社同款，稳" },
+  band: { label: "黑底大标题", hint: "上下黑底，干净耐看" },
   poster: { label: "大字报", hint: "信息流最抢眼" },
   card: { label: "韩中对照卡", hint: "学习感最强" },
-  reels: { label: "Reels 款", hint: "ins 爆款同款" },
+  reels: { label: "Reels 款", hint: "画面铺满，字压在下方" },
 };
 // 配色预设，和 xhs-bilingual-clip 模板 config.ts 的 PALETTES 一致（黑底上用低饱和高明度色）
 const PALETTES = [
@@ -527,14 +527,14 @@ function CategorySheet({ open, onOpenChange }: { open: boolean; onOpenChange: (o
             <Button type="submit" className="w-full rounded-full" disabled={saving}>{saving ? <Loader2 className="animate-spin" /> : <Plus />}添加栏目</Button>
           </form>
           <div>
-            <div className="mb-2 flex items-center text-sm font-semibold">现有栏目<button type="button" onClick={() => { if (window.confirm("恢复成默认的 6 个栏目？你自己加的栏目会被删掉。")) resetCategories().catch(oops); }} className="ml-auto text-xs font-normal text-muted-foreground hover:text-foreground">恢复默认</button></div>
+            <div className="mb-2 flex items-center text-sm font-semibold">现有栏目<button type="button" onClick={() => { if (window.confirm("恢复成默认栏目？你自己加的栏目会被删掉。")) resetCategories().catch(oops); }} className="ml-auto text-xs font-normal text-muted-foreground hover:text-foreground">恢复默认</button></div>
             <ul className="divide-y divide-border rounded-2xl bg-card shadow-card">
               {categories.map((c) => (
                 <li key={c.id} className="flex items-center gap-2 px-3.5 py-2.5 text-sm">
                   <div className="min-w-0 flex-1">
                     <div className="font-medium">{c.label}</div>
-                    <div className="truncate text-xs text-muted-foreground">{c.kind === "hot" ? "Melon 实时榜 + theqoo 热帖，自动更新" : c.sources.map((s) => s.replace(/^https?:\/\/(www\.)?youtube\.com\//, "").replace(/\/shorts$/, "").replace(/ shorts$/, "")).join("、")}</div>
-                    {c.kind !== "hot" && <div className="truncate text-xs text-primary/80">{c.scouting ? "正在找这类内容的频道…" : c.found?.length ? `自动找到的频道：${c.found.join("、")}` : "会自动去找做这类短视频的频道"}</div>}
+                    <div className="truncate text-xs text-muted-foreground">{c.kind === "hot" ? "Melon 实时榜 + theqoo 热帖，自动更新" : c.kind === "mine" ? `按你最近做过的作品自动找同类${c.sources.length ? "：" + c.sources.slice(0, 6).join("、") : ""}` : c.sources.map((s) => s.replace(/^https?:\/\/(www\.)?youtube\.com\//, "").replace(/\/shorts$/, "").replace(/ shorts$/, "")).join("、")}</div>
+                    {c.kind !== "hot" && <div className="truncate text-xs text-primary/80">{c.kind === "mine" ? (c.scouting ? "正在分析你做过的作品…" : c.found?.length ? `盯着你用过的频道：${c.found.join("、")}` : "做过几条作品后会自动开始") : c.scouting ? "正在找这类内容的频道…" : c.found?.length ? `自动找到的频道：${c.found.join("、")}` : "会自动去找做这类短视频的频道"}</div>}
                   </div>
                   <button type="button" aria-label={`删除栏目 ${c.label}`} onClick={() => removeCategory(c.id).catch(oops)} className="p-1 text-muted-foreground/60 hover:text-destructive"><Trash2 className="size-4" /></button>
                 </li>
@@ -565,6 +565,7 @@ function Discover() {
     if (dur === "60") list = list.filter((v) => v.duration == null || v.duration <= 60);
     if (hideMade) list = list.filter((v) => !made.has(v.id));
     if (sort === "hot") list = [...list].sort((a, b) => b.views - a.views);
+    else if (cat?.kind === "mine" && !query) { /* 保留服务端按你的口味排好的顺序 */ }
     else if (query || tab !== ALL) list = [...list].sort((a, b) => worth(b) - worth(a));
     return { pool: list, cut: base.length - list.length };
   }, [query, results, tab, categories, videos, dur, sort, hideMade, hidden, made]);

@@ -26,6 +26,8 @@ const needYtdlp = () => { if (!cfg.ytdlp) throw new Error("没找到 yt-dlp：�
 // 频道由 scripts/scout-channels.mjs 按"最新 12 条 Shorts 播放量中位数"筛出来，过一段时间重跑一次更新。
 // ch：官方频道 Shorts 页（最新在前）；q：搜索词；kind:"hot" 的搜索词来自 Melon 实时榜 + theqoo 热帖
 const DEFAULT_CATEGORIES = [
+  // 按用户最近真正做过的作品找同类：盯来源频道 + AI 按作品生成搜索词 + 按口味排序（见 refreshTaste / buildMine）
+  { id: "mine", label: "像你做过的", kind: "mine" },
   { id: "hot", label: "今日热点", kind: "hot" },
   { id: "issue", label: "韩网话题", q: ["연예인 썰 shorts", "연예계 이슈 shorts", "연예인 레전드 썰 shorts", "연예인 미담 shorts", "방송 레전드 발언 shorts", "예능 비하인드 썰 shorts"] },
   { id: "variety", label: "综艺名场面", ch: ["https://www.youtube.com/@ddeunddeun/shorts", "https://www.youtube.com/@SBSRunningMan/shorts", "https://www.youtube.com/@JTBCVoyage/shorts", "https://www.youtube.com/@workman/shorts", "https://www.youtube.com/@WassupMan/shorts", "https://www.youtube.com/@mmtg_official/shorts", "https://www.youtube.com/@SBSCatch/shorts", "https://www.youtube.com/@mbicnews/shorts"], q: ["예능 레전드 shorts", "예능 웃긴 장면 shorts", "유재석 웃긴 shorts", "런닝맨 레전드 shorts"] },
@@ -35,12 +37,14 @@ const DEFAULT_CATEGORIES = [
   { id: "life", label: "生活共鸣", ch: ["https://www.youtube.com/@shortbox/shorts", "https://www.youtube.com/@nerdult/shorts"], q: ["길거리 인터뷰 shorts", "시민 인터뷰 웃긴 shorts", "감동 실화 shorts", "할머니 할아버지 감동 shorts", "가족 웃긴 순간 shorts", "연애 공감 shorts", "직장인 공감 shorts"] },
   { id: "drama", label: "热播韩剧", ch: ["https://www.youtube.com/@SBSCatch/shorts", "https://www.youtube.com/@netflixkcontent/shorts", "https://www.youtube.com/@NetflixKorea/shorts", "https://www.youtube.com/@jtbcdrama/shorts"], q: ["드라마 명장면 shorts", "드라마 명대사 shorts"] },
 ];
-const CATS_VERSION = 2; // 默认栏目改了就加一：没动过栏目的人自动换成新的默认
+const CATS_VERSION = 3; // 默认栏目改了就加一：没动过栏目的人自动换成新的默认
 const CATS_FILE = path.join(JOBS, "categories.json");
 let categories = (() => { try { const c = JSON.parse(readFileSync(CATS_FILE, "utf8")); if (c.v === CATS_VERSION && Array.isArray(c.list) && c.list.length) return c.list; if (Array.isArray(c.list)) return [...structuredClone(DEFAULT_CATEGORIES), ...c.list.filter((x) => x.custom)]; } catch {} return structuredClone(DEFAULT_CATEGORIES); })();
 const catOf = (id) => categories.find((c) => c.id === id);
 const saveCats = () => writeFileSync(CATS_FILE, JSON.stringify({ v: CATS_VERSION, list: categories }, null, 1));
-const publicCats = () => categories.map((c) => ({ id: c.id, label: c.label, kind: c.kind, custom: !!c.custom, sources: [...(c.q || []), ...(c.ch || [])], found: (scouted[c.id]?.channels || []).map((x) => x.name), scouting: scouting.has(c.id) || queued.has(c.id) }));
+const publicCats = () => categories.map((c) => c.kind === "mine"
+  ? { id: c.id, label: c.label, kind: c.kind, custom: false, sources: (taste.queries || []).map((x) => x.ko), found: (taste.channels || []).map((x) => x.name), scouting: !!tasteBusy }
+  : { id: c.id, label: c.label, kind: c.kind, custom: !!c.custom, sources: [...(c.q || []), ...(c.ch || [])], found: (scouted[c.id]?.channels || []).map((x) => x.name), scouting: scouting.has(c.id) || queued.has(c.id) });
 // 每行一个：http 开头的是频道/播放列表链接，其余当搜索词
 function addCategory({ label, sources }) {
   const name = String(label || "").trim().slice(0, 12);
@@ -115,7 +119,7 @@ const fetchMeta = (v) =>
           const j = JSON.parse(out);
           const ac = Object.keys(j.automatic_captions || {});
           const orig = (ac.find((k) => k.endsWith("-orig")) || "").replace("-orig", "");
-          const m = { categories: j.categories || [], orig, desc: (j.description || "").replace(/\s+/g, " ").slice(0, 160), duration: j.duration ?? v.duration };
+          const m = { categories: j.categories || [], orig, desc: (j.description || "").replace(/\s+/g, " ").slice(0, 160), duration: j.duration ?? v.duration, likes: j.like_count ?? null, comments: j.comment_count ?? null, views: j.view_count ?? null };
           // speech: "ko"=有韩语台词，"none"=没识别到语音，"other"=识别成别的语言（多半是歌）
           m.speech = orig === "ko" ? "ko" : orig ? "other" : "none";
           meta.set(v.id, m);
@@ -127,14 +131,15 @@ const fetchMeta = (v) =>
         });
 
 // 有台词才要：舞蹈、MV、挑战、只有标签的标题一律不要；查过详情的必须识别出韩语台词；没查到详情的排在后面
-async function enrich(items, limit = 24) {
-  const top = items.filter((v) => titleOk(v.title)).slice(0, Math.max(limit, 40));
+async function enrich(items, limit = 24, { loose = false, max = 40 } = {}) {
+  const top = items.filter((v) => titleOk(v.title)).slice(0, Math.max(limit, max));
   const look = top.slice(0, limit);
   for (let i = 0; i < look.length; i += 3) await Promise.all(look.slice(i, i + 3).map(fetchMeta));
   saveMeta();
   return top
     .map((v) => ({ ...v, ...(meta.get(v.id) ? { meta: meta.get(v.id), duration: meta.get(v.id).duration } : {}) }))
-    .filter((v) => !v.meta || v.meta.speech === "ko")
+    // 很多短视频本来就没有自动字幕（speech=none），loose 时只扔掉识别成外语/唱歌的，其余交给 AI 判断
+    .filter((v) => !v.meta || v.meta.speech === "ko" || (loose && v.meta.speech === "none"))
     .sort((a, b) => (b.meta?.speech === "ko") - (a.meta?.speech === "ko") || b.views - a.views);
 }
 
@@ -278,11 +283,18 @@ async function buildCat(cat) {
       ...artists.map((a) => ({ src: `date:${a.query} 예능`, topic: a.name.replace(/\s*\(.*\)/, ""), must: [a.query, a.name.replace(/\s*\(.*\)/, "")] })),
       ...topics.map((t) => ({ src: `date:${t.ko}`, topic: t.zh })),
     ];
+  } else if (c.kind === "mine") {
+    const t = await refreshTaste();
+    if (!t.channels.length && !t.queries.length) return [];
+    sources = [
+      ...t.channels.map((x) => ({ src: x.url, n: 20, topic: `你用过的频道`, mine: true })),
+      ...t.queries.map((x) => ({ src: shortUrl(x.ko), n: 20, topic: x.like ? `像「${x.like}」` : "" })),
+    ];
   } else sources = [...(c.q || []).map(shortUrl), ...(c.ch || []), ...(scouted[cat]?.channels || []).map((x) => x.url)].map((src) => ({ src, n: src.includes("search_query=") ? 20 : 12 }));
   const lists = await Promise.allSettled(sources.map(async (s) =>
     (await ytList(s.src, s.n || 12))
       .filter((v) => !s.must || s.must.some((n) => n && (v.title + " " + v.channel).toLowerCase().includes(n.toLowerCase())))
-      .map((v) => (s.topic ? { ...v, topic: s.topic } : v))));
+      .map((v) => ({ ...v, ...(s.topic ? { topic: s.topic } : {}), ...(s.mine ? { fromMine: true } : {}) }))));
   const seen = new Set();
   const items = lists
     .flatMap((r) => (r.status === "fulfilled" ? r.value : []))
@@ -291,10 +303,88 @@ async function buildCat(cat) {
     .filter(keep)
     .map((v) => ({ ...v, category: cat }))
     .sort((a, b) => b.views - a.views);
-  const rich = (await enrich(items, 24)).slice(0, 40);
+  let rich = c.kind === "mine" ? await enrich(items, 30, { loose: true, max: 90 }) : (await enrich(items, 24)).slice(0, 40);
+  if (c.kind === "mine") {
+    const made = new Set(madeWorks().map((j) => j.vid));
+    // 点赞多、点赞率高的先给 AI 看；做过的不再出现
+    // 你用过的频道的视频优先（这些频道的口味已经被你验证过）；官方大频道往后放
+    const OFFICIAL = /SBS|KBS|MBC|JTBC|tvN|Mnet|채널|공식|official|Entertainment|스브스|런닝맨/i;
+    const heat = (v) => (v.fromMine ? 3e6 : 0) - (OFFICIAL.test(v.channel || "") ? 1e6 : 0) + (v.meta?.likes ?? 0) * 3 + (v.views || 0) * 0.02 + ((v.meta?.likes || 0) / Math.max(v.views || 1, 1)) * 2e6;
+    rich = await rankByTaste(rich.filter((v) => !made.has(v.id)).sort((a, b) => heat(b) - heat(a)), taste);
+  }
   if (rich.length) { cache.set(cat, { at: Date.now(), items: rich }); saveCache(); } // 空结果不缓存，下次重新抓
   else if (cache.has(cat)) return cache.get(cat).items;
   return rich;
+}
+
+// ---------- 像你做过的：按用户最近真正做过的作品找同类 ----------
+// 用户的选题口味在"做过什么"里，不在固定栏目里：AI 眼镜考高考、拿 AI 算月薪、句句反转的路人采访、大学/转学生现实……
+// 这类多来自创作者和剪辑号（하이타치、ootb、미미미누、爱豆剪辑号），官方大频道和泛关键词找不到。
+// 1) 盯作品的来源频道  2) AI 按作品生成韩文搜索词去搜同类  3) 拿作品当例子让 AI 按口味排序；做过新作品自动更新
+const TASTE_FILE = path.join(JOBS, "taste.json");
+let taste = (() => { try { return JSON.parse(readFileSync(TASTE_FILE, "utf8")); } catch { return { sig: "", works: [], channels: [], queries: [] }; } })();
+const madeWorks = () => jobs.filter((j) => j.status === "done" && j.url && !j.id.startsWith("tpl-")).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+let tasteBusy = null;
+function refreshTaste() {
+  return (tasteBusy ||= (async () => {
+    const done = madeWorks().slice(0, 12);
+    const sig = done.map((j) => j.id).join(",");
+    if (taste.sig === sig && taste.queries?.length) return taste;
+    const works = [];
+    for (const j of done) {
+      let title = j.title, summary = "";
+      try { const s = JSON.parse(readFileSync(path.join(j.dir, "out", "summary.json"), "utf8")); title = s.title || title; summary = s.summary || ""; } catch {}
+      let w = taste.works?.find((x) => x.id === j.id);
+      if (!w) {
+        w = { id: j.id, vid: j.vid, url: j.url, title, summary, handle: "", channel: "" };
+        if (/youtube\.com|youtu\.be/.test(j.url) && cfg.ytdlp) {
+          try { const o = JSON.parse(await run(cfg.ytdlp, ["-J", "--skip-download", "--no-playlist", "--no-update", j.url], { timeout: 60000 })); w.handle = o.uploader_id || ""; w.channel = o.channel || o.uploader || ""; } catch {}
+        }
+      }
+      works.push(w);
+    }
+    const channels = [...new Map(works.filter((w) => w.handle?.startsWith("@")).map((w) => [w.handle.toLowerCase(), { handle: w.handle, name: w.channel || w.handle, url: `https://www.youtube.com/${w.handle}/shorts` }])).values()];
+    let queries = taste.queries || [];
+    if (works.length) {
+      try {
+        const r = await askJSON(`下面是一个小红书"韩语学习 + 韩娱"账号最近真正做过的视频（素材来自 YouTube 韩国短视频），代表了它的选题口味：
+${works.map((w, i) => `${i + 1}. ${w.title}${w.summary ? `：${w.summary}` : ""}${w.channel ? `（来源频道：${w.channel}）` : ""}`).join("\n")}
+
+请给出 10 个韩文 YouTube 搜索词，用来找"同一类、但还没做过"的韩国短视频。要求：
+- 抓住这些作品共同的类型和笑点：比如创作者搞笑短剧、拿 AI 整活/实验、街头或校园采访里的反转、大学生/转学/职场现实、爱豆综艺里有台词的名场面；不要只是换个艺人名
+- 其中至少 3 个专门找剪辑号做的切片：画面上方有大标题、下方有字幕的那种综艺/访谈/采访切片（比如 "예능 레전드 자막"、"인터뷰 반전 모음" 这类剪辑号常用说法）
+- 每个 2-5 个韩文词，像韩国人真会搜的说法，结尾不用加 shorts
+- 不要舞蹈、MV、体育、政治、新闻
+只输出 JSON 数组：[{"ko":"韩文搜索词","like":"最像哪条作品（用上面的中文标题，≤10字）"}]`, { model: "sonnet", effort: "low" }, "[");
+        const ok = (Array.isArray(r) ? r : []).filter((x) => x?.ko && /[가-힣]/.test(x.ko)).slice(0, 10);
+        if (ok.length) queries = ok;
+      } catch (e) { console.warn("生成搜索词失败", e.message); }
+    }
+    taste = { sig, at: Date.now(), works, channels, queries };
+    writeFileSync(TASTE_FILE, JSON.stringify(taste, null, 1));
+    return taste;
+  })().finally(() => { tasteBusy = null; }));
+}
+// 拿用户做过的作品当例子，让 AI 把候选按口味排序；失败就按播放量
+async function rankByTaste(items, t) {
+  if (!items.length || !t.works.length) return items;
+  const cands = items.slice(0, 50).map((v) => ({ id: v.id, title: v.title, channel: v.channel, views: v.views, likes: v.meta?.likes ?? undefined, fromMine: v.fromMine || undefined, desc: v.meta?.desc?.slice(0, 80) }));
+  try {
+    const r = await askJSON(`这个小红书"韩语学习 + 韩娱"账号最近做过这些视频（它的口味）：
+${t.works.map((w) => `- ${w.title}${w.channel ? `（${w.channel}）` : ""}`).join("\n")}
+
+下面是候选的韩国短视频（fromMine=来自它用过的频道）。挑出最像它会做的（同类型、同样有梗有台词、中国观众也看得懂），挑 20-30 条，按像的程度排序。
+优先：点赞多、点赞率高的（likes 相对 views 高说明真受欢迎）；剪辑号做的"上方大标题 + 下方字幕"的综艺/访谈/采访切片；创作者的整活短剧。
+不像的不要选：纯舞蹈/MV/唱歌、太本土看不懂的梗、和这些作品毫无关系的。
+只输出 JSON 数组：[{"id":"候选id","zh":"这条视频的中文小标题（≤14字，小红书风格，标题是英文的也要翻成中文）","why":"最像的那条作品的短名，≤8 个字，比如 AI算月薪、路人采访反转、大学社团"}]
+候选：${JSON.stringify(cands)}`, { model: "sonnet", effort: "low" }, "[");
+    const byId = new Map(items.map((v) => [v.id, v]));
+    const picked = (Array.isArray(r) ? r : []).filter((x) => byId.has(x?.id)).map((x) => ({ ...byId.get(x.id), ...(x.zh ? { ai: { ...(byId.get(x.id).ai || {}), zh_title: String(x.zh).slice(0, 20) } } : {}), topic: x.why ? `像「${String(x.why).replace(/^像|[「」]/g, "").slice(0, 8)}」` : byId.get(x.id).topic }));
+    if (picked.length < 4) return items;
+    // AI 挑中的排前面，其余同类接在后面（不丢），没挑中的不带"像…"标签
+    const got = new Set(picked.map((v) => v.id));
+    return [...picked, ...items.filter((v) => !got.has(v.id)).map((v) => ({ ...v, topic: v.fromMine ? "你用过的频道" : "" }))];
+  } catch (e) { console.warn("按口味排序失败", e.message); return items; }
 }
 
 // 贴链接直接做：不经过发现页，任何 yt-dlp 认识的链接都行
@@ -607,7 +697,7 @@ async function recommend(cats) {
 硬性排除：纯舞蹈/纯音乐/MV/舞台直拍（没有台词就没法做字幕；speech 字段="ko" 表示有韩语台词，优先选）、体育（比赛、运动员、奥运等）、政治/时政、负面社会新闻、灾难事故、低俗擦边。
 
 只输出 JSON 数组，不要其他文字；字符串里不要用英文双引号，引用请用「」。每项：{"id":原id,"zh_title":"中文小标题(≤14字，小红书风格)","summary":"一句话讲视频内容","why":"小红书用户为什么会喜欢（点出人群和情绪）","tags":["2-3个标签"],"cover_style":"band|poster|card|reels 之一","score":1-10}
-`+`韩网正在热议（theqoo HOT）：${(await buzz().catch(() => ({ topics: [] }))).topics.map((t) => t.zh).join("、")}
+`+`${taste.works?.length ? `这个账号最近真正做过、代表它口味的视频（优先选同类型的：创作者整活短剧、拿 AI 整活、采访反转、大学生现实、剪辑号的上方标题下方字幕切片）：${taste.works.map((w) => w.title).join("、")}\n` : ""}韩网正在热议（theqoo HOT）：${(await buzz().catch(() => ({ topics: [] }))).topics.map((t) => t.zh).join("、")}
 韩国音源榜最火的艺人（Melon，仅供参考，不要只选音乐内容）：${(await melonHot().catch(() => [])).slice(0, 15).map((a) => a.name).join("、")}
 候选：${JSON.stringify(list)}`;
   const ask = async (p) => {
