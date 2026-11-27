@@ -644,7 +644,9 @@ const helperBase = (j) => `http://127.0.0.1:${PORT}/api/helper?id=${encodeURICom
 const helperNote = (j) => `
 - 你在沙箱里运行：只能改当前目录里的文件，不要试图改别的地方。ffmpeg、ffprobe、whisper-cli 直接在命令行跑没问题；但 node 脚本不能启动其他程序（会报 EPERM），所以下面这些命令不要自己跑，改用 curl 请工作台代跑（会等它跑完，返回退出码和输出）：
 ${Object.entries(HELPERS).map(([k, h]) => `  ${h.for} → curl.exe -s "${helperBase(j)}${k}${h.arg || ""}"`).join("\n")}
-  不在这个清单里、又需要 node 启动其他程序的事，改成直接用 ffmpeg 命令行做。`;
+  不在这个清单里、又需要 node 启动其他程序的事，改成直接用 ffmpeg 命令行做。
+- 改文件：用你自带的改文件工具；如果要从命令行改，就写一个 node 脚本（fs.readFileSync / writeFileSync，utf8）去改，或用 PowerShell 的 Set-Content -Encoding utf8。不要在 PowerShell 里调用 apply_patch（Windows 上引号会出错）。
+- 某个工具或命令报错时换一种方法继续，不要放弃；必须把成片和其他交付文件都做出来才算完成。`;
 function runHelper(j, name, q) {
   const h = HELPERS[name];
   if (!h) throw new Error(`没有这个命令：${name}`);
@@ -923,19 +925,19 @@ async function pump() {
       if (st && st[1] > (j.stage ?? -1)) j.stage = st[1];
     };
     const rev = j.revision;
-    // Codex 的 Windows 沙箱里 yt-dlp（PyInstaller 单文件版）解压临时文件会失败，所以由服务先下好原片再交给它
+    // 原片一律由服务先下好再交给 AI：Codex 沙箱里 yt-dlp 起不来；两条线路用同一条下载命令，行为一致，也省 AI 几轮
     let predownloaded = false;
-    if (!rev && auth.engine === "codex") {
+    if (!rev) {
       const orig = path.join(j.dir, "original.mp4");
       if (!existsSync(orig)) {
         j.last = "下载原片"; j.stage = 0; saveJobs();
         await new Promise((ok, bad) => {
-          const p = spawn(needYtdlp(), ["-f", "bv*[height>=1080]+ba/b", "--merge-output-format", "mp4", "-o", "original.mp4", "--no-playlist", j.url], { cwd: j.dir, windowsHide: true, env: withTmp(BASE_ENV, j.dir) });
+          const p = spawn(needYtdlp(), ["-f", "bv*[height>=1080]+ba/bv*+ba/b", "--merge-output-format", "mp4", "-o", "original.mp4", "--no-playlist", "--no-update", "--js-runtimes", "node", j.url], { cwd: j.dir, windowsHide: true, env: withTmp(BASE_ENV, j.dir) });
           current = { id: j.id, proc: p };
           let err = "";
-          p.stderr.on("data", (d) => { err = (err + d).slice(-400); });
+          p.stderr.on("data", (d) => { err = (err + d).slice(-4000); });
           p.on("error", bad);
-          p.on("close", (c) => (c === 0 && existsSync(orig) ? ok() : bad(new Error(`下载原片失败：${err.trim() || c}`))));
+          p.on("close", (c) => (c === 0 && existsSync(orig) ? ok() : bad(new Error(`下载原片失败：${(err.match(/ERROR:.*$/m)?.[0] || err.trim() || c).toString().replace(/^ERROR:\s*(\[\w+\]\s*)?/, "").slice(0, 160)}`))));
         });
       }
       predownloaded = true;
