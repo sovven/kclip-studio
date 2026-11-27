@@ -9,6 +9,7 @@ import path from "node:path";
 import { createTplApi } from "./tpl.mjs";
 import { createPackApi } from "./pack.mjs";
 import { createConfig, toolLines } from "./config.mjs";
+import { createJobDir } from "./jobdir.mjs";
 
 const PORT = Number(process.env.PORT) || 5291;
 // 只监听本机：这个服务能让 Agent 在电脑上跑命令，不能暴露给局域网。确实要给别的设备用，自己设 HOST=0.0.0.0
@@ -425,6 +426,10 @@ const saveAuth = () => {
 const currentApi = () => auth.apis.find((a) => a.engine === auth.engine && a.id === auth.routes[auth.engine]);
 // 临时文件一律放 D 盘（作品文件夹 work/tmp，或 jobs/_tmp），不往 C 盘系统 Temp 写；作品做完就删
 const withTmp = (env, dir) => { const t = path.join(dir, "work", "tmp"); mkdirSync(t, { recursive: true }); return { ...env, TEMP: t, TMP: t, TMPDIR: t }; };
+// 服务中途被关时作品的 work/tmp 会留下（Remotion 每出一张图就拷一份 20 MB 素材进去），启动时统一清掉
+for (const d of readdirSync(JOBS, { withFileTypes: true })) if (d.isDirectory()) try { rmSync(path.join(JOBS, d.name, "work", "tmp"), { recursive: true, force: true }); } catch {}
+
+const { linkModules, prepareJobDir, reuseOriginal } = createJobDir({ cfg, getJobs: () => jobs });
 const claudeEnv = () => {
   const custom = currentApi();
   if (auth.engine === "claude" && custom) return { ...BASE_ENV, CLAUDE_CONFIG_DIR: CLAUDE_API_DIR, ANTHROPIC_BASE_URL: custom.baseUrl, ANTHROPIC_AUTH_TOKEN: custom.apiKey };
@@ -651,6 +656,7 @@ function runHelper(j, name, q) {
   const h = HELPERS[name];
   if (!h) throw new Error(`没有这个命令：${name}`);
   const [cmd, args] = h.run(q);
+  try { linkModules(j.dir); } catch {}
   j.last = `工作台代跑：${h.for}`;
   if (h.stage > (j.stage ?? -1)) j.stage = h.stage;
   j.steps++;
@@ -756,12 +762,11 @@ const SELF_CHECK = `
   看到任何难看或出错的地方直接改，改完重新出图再看一遍，直到没问题；这一步只看你自己改出来的东西，用户之后不应该再指出这类问题。`;
 
 function jobPrompt(j) {
-  const SKILL = cfg.skill, NODE_MODULES = cfg.skillModules;
-  const link = process.platform === "win32" ? "用 junction 指向（PowerShell New-Item -ItemType Junction）" : "用符号链接指向（ln -s）";
+  const SKILL = cfg.skill;
   return `用 xhs-bilingual-clip skill（在 ${SKILL}，先读 SKILL.md）把这个视频做成小红书双语字幕视频：${j.url}
 - 这台电脑的工具位置（SKILL.md 里写的路径只是示例，以这里为准，不要去找别的位置，也不要自己下载安装）：
   ${toolLines(cfg)}
-- 当前目录就是项目目录：把 ${SKILL}/template 的内容复制到这里（不要复制 node_modules），node_modules ${link} ${NODE_MODULES}，字体从上面的字体文件夹复制 NotoSansSC-VF.ttf / NotoSansKR-VF.ttf 到 public/fonts。
+- 当前目录就是项目目录，工作台已经准备好了：模板文件、public/fonts 里的字体、node_modules（链接到整台电脑共用的那份依赖）都在。不要再复制模板，不要动 node_modules，不要运行 npm install / npm i / npm ci 或任何安装命令；缺什么就报错说明，别自己装。
 - 视频标题参考：${j.title}${j.note ? `；用户备注：${j.note}` : ""}
 - 封面样式：${j.coverStyle}（config.ts 的 COVER_STYLE：band 黑底大标题 / poster 大字报 / card 韩中对照卡 / reels Reels 款）；配色 PALETTE = "${/^[a-z]+$/.test(j.accent || "") ? j.accent : "yellow"}"（config.ts，字幕/标题/单词卡/封面都跟着变）。版式要守小红书安全区：顶部 150px、底部 y>1480、右侧 140px 不放字；一句字幕最多 2 行原文 + 1 行中文，超了就拆。封面底图挑人物清楚、没有烧录大字幕的一帧。
 - 全自动，不要提问；听不清的句子删掉并记录。写脚本一律用 node，不要用 python。
@@ -929,6 +934,7 @@ async function pump() {
     let predownloaded = false;
     if (!rev) {
       const orig = path.join(j.dir, "original.mp4");
+      if (!existsSync(orig) && reuseOriginal(j, orig)) { j.last = "复用已下载的原片"; saveJobs(); }
       if (!existsSync(orig)) {
         j.last = "下载原片"; j.stage = 0; saveJobs();
         await new Promise((ok, bad) => {
@@ -941,7 +947,8 @@ async function pump() {
         });
       }
       predownloaded = true;
-    }
+      prepareJobDir(j.dir);
+    } else if (existsSync(path.join(j.dir, "package.json"))) linkModules(j.dir);
     const codex = auth.engine === "codex";
     if (codex) j.helperToken = randomUUID();
     const light =rev && rev.scopes.length && rev.scopes.every((k) => k === "caption" || k === "cover");
@@ -966,6 +973,7 @@ async function pump() {
         } catch {}
       },
     });
+    try { linkModules(j.dir); } catch {}
     j.status = existsSync(path.join(j.dir, "out", "成片.mp4")) ? "done" : "failed";
     if (j.status === "failed") j.error = "没有生成 out/成片.mp4，看 log.jsonl";
   } catch (e) {
