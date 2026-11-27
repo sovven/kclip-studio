@@ -937,14 +937,22 @@ async function pump() {
       if (!existsSync(orig) && reuseOriginal(j, orig)) { j.last = "复用已下载的原片"; saveJobs(); }
       if (!existsSync(orig)) {
         j.last = "下载原片"; j.stage = 0; saveJobs();
-        await new Promise((ok, bad) => {
-          const p = spawn(needYtdlp(), ["-f", "bv*[height>=1080]+ba/bv*+ba/b", "--merge-output-format", "mp4", "-o", "original.mp4", "--no-playlist", "--no-update", "--js-runtimes", "node", j.url], { cwd: j.dir, windowsHide: true, env: withTmp(BASE_ENV, j.dir) });
+        // --js-runtimes 只有较新的 yt-dlp 认识；别人电脑上的旧版报"no such option"时去掉它重试一次
+        const download = (extra) => new Promise((ok, bad) => {
+          const p = spawn(needYtdlp(), ["-f", "bv*[height>=1080]+ba/bv*+ba/b", "--merge-output-format", "mp4", "-o", "original.mp4", "--no-playlist", ...extra, j.url], { cwd: j.dir, windowsHide: true, env: withTmp(BASE_ENV, j.dir) });
           current = { id: j.id, proc: p };
           let err = "";
           p.stderr.on("data", (d) => { err = (err + d).slice(-4000); });
           p.on("error", bad);
-          p.on("close", (c) => (c === 0 && existsSync(orig) ? ok() : bad(new Error(`下载原片失败：${(err.match(/ERROR:.*$/m)?.[0] || err.trim() || c).toString().replace(/^ERROR:\s*(\[\w+\]\s*)?/, "").slice(0, 160)}`))));
+          p.on("close", (c) => {
+            if (c === 0 && existsSync(orig)) return ok();
+            const e = new Error(`下载原片失败：${(err.match(/ERROR:.*$/m)?.[0] || err.match(/error:.*$/m)?.[0] || err.trim() || c).toString().replace(/^ERROR:\s*(\[\w+\]\s*)?/i, "").slice(0, 160)}`);
+            e.unknownOption = /no such option/i.test(err);
+            bad(e);
+          });
         });
+        try { await download(["--no-update", "--js-runtimes", "node"]); }
+        catch (e) { if (!e.unknownOption) throw e; await download([]); }
       }
       predownloaded = true;
       prepareJobDir(j.dir);
