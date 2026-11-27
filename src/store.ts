@@ -322,10 +322,12 @@ export const useStudio = create<State>((set, get) => ({
         // 修改失败时作品会回到作品库（状态还是 done），要看这次修改记录的结果，不能报"做好了"
         const p = prev.find((x) => x.id === j.id);
         const rev = (j.revisions?.length || 0) > (p?.revisions?.length || 0) ? j.revisions!.at(-1) : null;
-        if (rev && !rev.ok) toast.error(`没改成：${name}`, { description: rev.note, duration: 15000, action: { label: "查看", onClick: () => get().setPage("library") } });
-        else if (rev) toast.success(`改好了：${name}`, { description: rev.note, duration: 10000, action: { label: "去看看", onClick: () => get().setPage("library") } });
-        else if (j.status === "done") toast.success(`做好了：${name}`, { duration: 10000, action: { label: "去看看", onClick: () => get().setPage("library") } });
-        else if (j.status === "failed" && j.error !== "已取消") toast.error(`没做成：${name}`, { description: j.error, duration: 10000, action: { label: "查看", onClick: () => get().setPage("studio") } });
+        // 提示只要一行：结果 + 简短原因；AI 的长说明留在对话和修改记录里，不弹出来
+        const short = (s?: string) => String(s || "").replace(/\*\*|`/g, "").split(/[。\n]/)[0].slice(0, 28);
+        if (rev && !rev.ok) toast.error("没改成", { description: short(rev.note), duration: 6000 });
+        else if (rev) toast.success("改好了", { description: name.slice(0, 24), duration: 4000 });
+        else if (j.status === "done") toast.success("做好了", { description: name.slice(0, 24), duration: 5000, action: { label: "去看看", onClick: () => get().setPage("library") } });
+        else if (j.status === "failed" && j.error !== "已取消") toast.error("没做成", { description: short(j.error), duration: 6000, action: { label: "查看", onClick: () => get().setPage("studio") } });
       }
       set({ jobs });
     } catch {

@@ -442,13 +442,16 @@ function setRoute({ engine, route }) {
   saveAuth();
 }
 // base_url 和模型名会进命令行（shell: true），只放行安全字符；Key 走环境变量
-function addApi({ engine, name, baseUrl, apiKey, model }) {
+async function addApi({ engine, name, baseUrl, apiKey, model }) {
   const e = engine === "codex" ? "codex" : "claude";
   const url = String(baseUrl || "").trim().replace(/\/+$/, "");
   if (!/^https?:\/\/[A-Za-z0-9.\-:/_]+$/.test(url)) throw new Error("API 地址格式不对，要以 http:// 或 https:// 开头");
   if (!String(apiKey || "").trim()) throw new Error("请填写 API Key");
   const m = String(model || "").trim();
   if (m && !/^[\w.:\-/]+$/.test(m)) throw new Error("模型名只能包含字母、数字和 . : - / _");
+  // 先连一下地址：连不上当场告诉用户，不保存一条用不了的线路（任何 HTTP 回应都算连得上，401/404 也行）
+  try { await fetch(url, { method: "GET", signal: AbortSignal.timeout(8000) }); }
+  catch { throw new Error("这个 API 地址连不上：检查地址有没有填错、网络是否正常"); }
   const id = `api-${Date.now()}`;
   auth.apis.push({ id, engine: e, name: String(name || "").trim().slice(0, 24) || new URL(url).hostname, baseUrl: url, apiKey: String(apiKey).trim(), model: m });
   auth.engine = e;
@@ -536,7 +539,53 @@ const runCodex = (prompt, { cwd = ROOT, onLine, web, effort, onSpawn } = {}) =>
       else rej(new Error(`codex exit ${code}: ${(failure || errOut).slice(-500)}`));
     });
   });
-const agent = (prompt, opts) => (auth.engine === "codex" ? runCodex(prompt, opts) : runClaude(prompt, opts));
+// 出错时给人话：线路名 + 原因 + 下一步，不把 CLI 的原始日志甩给用户
+const routeName = () => {
+  const custom = currentApi();
+  if (custom) return `「${custom.label || custom.name || "自定义 API"}」`;
+  return auth.engine === "codex" ? "Codex" : auth.routes.claude === "relay" ? "Claude 中转站" : "Claude 官方账号";
+};
+function friendlyError(raw) {
+  const s = String(raw || "");
+  const r = routeName();
+  if (/insufficient.{0,10}balance|余额不足|billing_error|\b402\b|credit balance/i.test(s)) return `${r}余额不足：充值后再试，或在左下角换一条线路`;
+  if (/\b401\b|invalid.{0,12}(api.?key|token|x-api-key)|authentication_error|Failed to authenticate|not logged in|Please run \/login|未登录/i.test(s)) return `${r}登录失效或 Key 不对：点顶部「一键登录」，或在左下角「…」里改 Key`;
+  if (/\b429\b|rate.?limit|usage.?limit|quota|limit reached|额度/i.test(s)) return `${r}额度用完或请求太频繁：稍后再试，或换一条线路`;
+  if (/ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|getaddrinfo|fetch failed|stream disconnected|network error|unable to connect/i.test(s)) return `连不上${r}的服务器：检查网络，或 API 地址是否填对`;
+  if (/overloaded|\b529\b|\b50[0-4]\b|server error/i.test(s)) return `${r}服务器繁忙：稍后再试`;
+  if (/not recognized|ENOENT|command not found|不是内部或外部命令/i.test(s)) return `没找到${auth.engine === "codex" ? "Codex" : "Claude Code"} 命令行：点左下角「环境」按提示安装`;
+  const m = s.match(/"result":"((?:[^"\\]|\\.)*)"/);
+  return (m ? m[1].replace(/\\n/g, " ") : s.replace(/^(claude|codex) exit -?\d+:\s*/, "")).slice(0, 160) || "AI 调用失败";
+}
+const agent = async (prompt, opts = {}) => {
+  // 文字类任务（选题、检查、对话）最多等 2 分钟（联网查资料 4 分钟）：CLI 连不上时会自己反复重试好几分钟，不能让用户干等
+  let proc = null, timedOut = false, timer = null;
+  const o2 = { ...opts, onSpawn: (p) => { proc = p; opts.onSpawn?.(p); } };
+  if (!opts.onLine) timer = setTimeout(() => { timedOut = true; killTree(proc); }, opts.web ? 240000 : 120000);
+  let out;
+  try { out = await (auth.engine === "codex" ? runCodex(prompt, o2) : runClaude(prompt, o2)); }
+  catch (e) { throw new Error(timedOut ? `${routeName()}太久没回应：可能是网络或这条线路的问题，稍后再试或换一条线路` : friendlyError(e.message)); }
+  finally { clearTimeout(timer); }
+  if (!opts?.onLine) {
+    let o = null;
+    try { o = JSON.parse(out); } catch {}
+    if (o?.is_error) throw new Error(friendlyError(o.result));
+  }
+  return out;
+};
+// 要 JSON 的文字任务：解析失败就让 AI 重写一次（字符串里带引号等格式问题，任何线路都可能遇到）
+async function askJSON(prompt, opts = {}, open = "{") {
+  const close = open === "{" ? "}" : "]";
+  const once = async (p) => {
+    const t = JSON.parse(await agent(p, opts)).result || "";
+    return JSON.parse(t.slice(t.indexOf(open), t.lastIndexOf(close) + 1));
+  };
+  try { return await once(prompt); }
+  catch (e) {
+    if (!(e instanceof SyntaxError)) throw e;
+    return once(`${prompt}\n\n（上次输出不是合法 JSON：${e.message}。这次只输出合法 JSON；字符串里不要用英文双引号，引用一律用「」。）`);
+  }
+}
 
 async function recommend(cats) {
   const pool = (await Promise.all(cats.map((c) => discover(c).catch(() => [])))).flat();
@@ -663,7 +712,7 @@ async function judgeLesson({ kind, text, before, after, job }) {
   const what = kind === "caption-edit"
     ? `用户亲手改了小红书文案。\n改前：\n${String(before).slice(0, 1500)}\n改后：\n${String(after).slice(0, 1500)}`
     : `用户对成片提的修改意见${kind === "chat" ? "（对话里确认的方案，括号里是用户原话）" : ""}：\n「${String(text).slice(0, 1500)}」`;
-  const o = JSON.parse(await agent(`你在维护一个"韩语学习小红书短视频工作台"的经验本：把用户的纠正提炼成以后做视频要长期遵守的规则。现在判断这次反馈值不值得记。
+  const arr = await askJSON(`你在维护一个"韩语学习小红书短视频工作台"的经验本：把用户的纠正提炼成以后做视频要长期遵守的规则。现在判断这次反馈值不值得记。
 ${what}
 
 判断标准：
@@ -676,12 +725,8 @@ ${what}
 ${list}
 
 一条反馈里常常有好几点，逐点判断，每点一个对象（最多 3 个）。
-只输出 JSON 数组：[{"action":"add|merge|skip","id":"merge 时填已有规则 id","rule":"规则（skip 时留空）","why":"一句话说明为什么记/合并/跳过"}]`, { model: "sonnet", effort: "low" }));
-  if (o.is_error) throw new Error(o.result || "AI 调用失败");
-  const t = o.result || "";
-  const s = t.indexOf("["), e = t.lastIndexOf("]");
-  const arr = s >= 0 && e > s ? JSON.parse(t.slice(s, e + 1)) : [JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1))];
-  for (const r of arr.slice(0, 3)) applyLesson(r, { job, kind, text: text || after });
+只输出 JSON 数组：[{"action":"add|merge|skip","id":"merge 时填已有规则 id","rule":"规则（skip 时留空）","why":"一句话说明为什么记/合并/跳过"}]`, { model: "sonnet", effort: "low" }, "[");
+  for (const r of (Array.isArray(arr) ? arr : [arr]).slice(0, 3)) applyLesson(r, { job, kind, text: text || after });
   saveLessons();
 }
 function applyLesson(r, { job, kind, text }) {
@@ -950,14 +995,22 @@ async function pump() {
     const onlyCover = (s) => String(s || "").split("\n").filter((l) => /COVER_/.test(l)).join("\n");
     const videoSrcChanged = changedSrc.some((f) => f !== "Cover.tsx" && f !== "config.ts") || (changedSrc.includes("config.ts") && nonCover(cfgNow) !== nonCover(r.cfg0));
     const coverSrcChanged = changedSrc.includes("Cover.tsx") || (changedSrc.includes("config.ts") && onlyCover(cfgNow) !== onlyCover(r.cfg0));
+    // AI 改了源文件却没重新出成片/封面时，服务自己补跑固定的渲染命令（不花 AI 额度），而不是判失败
+    const aiNote = String(j.last || "").replace(/\*\*|`/g, "");
+    if (j.status === "done" && videoSrcChanged && !touched("成片.mp4")) {
+      const out1 = await runHelper(j, "render", new URLSearchParams());
+      if (out1.startsWith("exit=0")) await runHelper(j, "pack", new URLSearchParams());
+    }
+    if (j.status === "done" && coverSrcChanged && !touched("封面_3比4.png")) await runHelper(j, "cover", new URLSearchParams());
+    j.last = aiNote;
     const missed = [];
     if (j.status === "done") {
-      if (videoSrcChanged && !touched("成片.mp4")) missed.push("改了画面但成片没有重新渲染");
-      if (coverSrcChanged && !touched("封面_3比4.png")) missed.push("改了封面但封面没有重新生成");
+      if (videoSrcChanged && !touched("成片.mp4")) missed.push("成片重新渲染失败");
+      if (coverSrcChanged && !touched("封面_3比4.png")) missed.push("封面重新生成失败");
       if (!changedSrc.length && !["成片.mp4", "封面_3比4.png", "小红书文案.txt", "summary.json"].some(touched)) missed.push("没有任何文件被修改");
     }
-    if (existsSync(fresh) && missed.includes("改了画面但成片没有重新渲染")) missed.splice(missed.indexOf("改了画面但成片没有重新渲染"), 1, "新成片已渲染好，但旧成片被占用替换不了（关掉播放器后点重试）");
-    if (missed.length) { j.status = "failed"; j.error = `${missed.join("；")}。AI 说：${String(j.last || "").slice(0, 160)}`; }
+    if (existsSync(fresh) && missed.includes("成片重新渲染失败")) missed.splice(missed.indexOf("成片重新渲染失败"), 1, "新成片已渲染好，但旧成片被占用替换不了（关掉播放器后点重试）");
+    if (missed.length) { j.status = "failed"; j.error = missed.join("；"); }
     const ok = j.status === "done";
     if (!ok) for (const f of ["成片.mp4", "封面_3比4.png", "小红书文案.txt", "summary.json"]) if (existsSync(path.join(r.backup, f))) try { copyFileSync(path.join(r.backup, f), path.join(out, f)); } catch {}
     (j.revisions ||= []).push({ text: r.text, scopes: r.scopes, by: r.by, big: r.big, at: r.at, ok, note: ok ? j.last : j.error, backup: r.backup });
@@ -1118,10 +1171,7 @@ ${text}
 
 视频双语字幕：
 ${srt || "（没有）"}`;
-        const o = JSON.parse(await agent(prompt, { model: "sonnet", effort: "low" }));
-        if (o.is_error) throw new Error(o.result || "AI 调用失败");
-        const t = o.result || "";
-        const r = JSON.parse(t.slice(t.indexOf("{"), t.lastIndexOf("}") + 1));
+        const r = await askJSON(prompt, { model: "sonnet", effort: "low" });
         return send(res, 200, { issues: Array.isArray(r.issues) ? r.issues : [], revised: typeof r.revised === "string" ? r.revised : text });
       }
       if (u.pathname === "/api/jobs/delete" && req.method === "POST") { deleteJob((await body(req)).id); return send(res, 200, { ok: true }); }
@@ -1138,7 +1188,7 @@ ${srt || "（没有）"}`;
       if (u.pathname === "/api/health") return send(res, 200, await getHealth(u.searchParams.has("fresh")));
       if (u.pathname === "/api/login" && req.method === "POST") { startLogin(); return send(res, 200, { ok: true }); }
       if (u.pathname === "/api/auth-mode" && req.method === "POST") { setRoute(await body(req)); return send(res, 200, await getHealth()); }
-      if (u.pathname === "/api/apis" && req.method === "POST") { addApi(await body(req)); return send(res, 200, await getHealth()); }
+      if (u.pathname === "/api/apis" && req.method === "POST") { await addApi(await body(req)); return send(res, 200, await getHealth()); }
       if (u.pathname === "/api/apis/delete" && req.method === "POST") { removeApi((await body(req)).id); return send(res, 200, await getHealth()); }
       if (u.pathname === "/api/search") return send(res, 200, await withRealThumbs(await search(u.searchParams.get("q") || "")));
       if (u.pathname === "/api/picks") { try { const saved = JSON.parse(readFileSync(path.join(JOBS, "picks.json"), "utf8")); return send(res, 200, { ...saved, picks: await withRealThumbs(saved.picks) }); } catch { return send(res, 200, { picks: [] }); } }
